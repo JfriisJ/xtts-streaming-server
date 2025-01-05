@@ -84,30 +84,56 @@ def read_pdf_with_plumber(file_path):
     return " ".join(all_text)
 
 
-import re
-
-def split_text_into_chunks(text, max_length=250):
+def split_text_into_chunks(text, max_chars=250, max_tokens=300):
     """
-    Split text into chunks of up to max_length characters,
+    Split text into chunks of up to max_chars characters and max_tokens tokens,
     ensuring the split happens at sentence boundaries if possible.
     """
+    import re
     sentences = re.split(r'(?<=\.) ', text)  # Split by sentences
     chunks = []
     current_chunk = ""
+    current_tokens = 0
 
     for sentence in sentences:
-        if len(current_chunk) + len(sentence) + 1 <= max_length:  # +1 for the space
-            current_chunk += sentence + " "
-        else:
-            if current_chunk:  # Save the current chunk
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence + " "  # Start a new chunk
+        # Estimate token count for the sentence (1 token ≈ 4 characters)
+        sentence_tokens = len(sentence) // 4
 
-    if current_chunk:  # Add the last chunk
+        # Ensure chunk stays within character and token limits
+        if len(current_chunk) + len(sentence) <= max_chars and current_tokens + sentence_tokens <= max_tokens:
+            current_chunk += sentence + " "
+            current_tokens += sentence_tokens
+        else:
+            # If a single sentence exceeds the limits, split the sentence itself
+            if len(sentence) > max_chars or sentence_tokens > max_tokens:
+                sentence_parts = [sentence[i:i+max_chars] for i in range(0, len(sentence), max_chars)]
+                for part in sentence_parts:
+                    part_tokens = len(part) // 4
+                    if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
+                        current_chunk += part + " "
+                        current_tokens += part_tokens
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        current_chunk = part + " "
+                        current_tokens = part_tokens
+            else:
+                # Finalize the current chunk and start a new one
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence + " "
+                current_tokens = sentence_tokens
+
+    # Add the last chunk
+    if current_chunk:
         chunks.append(current_chunk.strip())
 
     return chunks
 
+
+
+
+import base64
 
 def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang):
     """Generate audio for each text chunk in a PDF."""
@@ -117,7 +143,10 @@ def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_stu
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
 
     for i, chunk in enumerate(chunks):
-        generated_audio = requests.post(
+        if len(chunk) > 250:
+            print(f"Warning: Chunk {i + 1} exceeds 250 characters and might cause truncation.")
+
+        response = requests.post(
             SERVER_URL + "/tts",
             json={
                 "text": chunk,
@@ -125,11 +154,24 @@ def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_stu
                 "speaker_embedding": embeddings["speaker_embedding"],
                 "gpt_cond_latent": embeddings["gpt_cond_latent"]
             }
-        ).content
+        )
+
+        if response.status_code != 200:
+            print(f"Error generating audio for chunk {i + 1}: {response.json()}")
+            continue
+
+        try:
+            generated_audio = response.content
+            decoded_audio = base64.b64decode(generated_audio)
+        except base64.binascii.Error as e:
+            print(f"Error decoding base64 for chunk {i + 1}: {e}")
+            continue
+
         audio_path = os.path.join(output_dir, f"audio_chunk_{i + 1}.wav")
         with open(audio_path, "wb") as audio_file:
-            audio_file.write(base64.b64decode(generated_audio))
+            audio_file.write(decoded_audio)
         print(f"Saved audio chunk {i + 1} to {audio_path}")
+
 
 
 with gr.Blocks() as demo:
