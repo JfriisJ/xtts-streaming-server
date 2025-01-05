@@ -13,7 +13,8 @@ cloned_speakers = {}
 from threading import Event
 
 stop_event = Event()
-
+header_slider = gr.Slider(label="Header Height", minimum=0, maximum=200, value=50, step=1)
+footer_slider = gr.Slider(label="Footer Height", minimum=0, maximum=200, value=60, step=1)
 
 print("Preparing file structure...")
 if not os.path.exists(OUTPUT):
@@ -77,7 +78,7 @@ def read_pdf(file_path):
 import pdfplumber
 import re
 
-def read_pdf_with_plumber(file_path, pages=None):
+def read_pdf_with_plumber(file_path, pages=None, header_height=50, footer_height=60):
     """
     Read text from a PDF file, skip headers/footers, fix hyphenated word splits,
     and process only specified pages.
@@ -90,21 +91,22 @@ def read_pdf_with_plumber(file_path, pages=None):
         for page_num in selected_pages:
             if page_num < len(pdf.pages):  # Ensure the page exists
                 page = pdf.pages[page_num]
-                # Filter objects to exclude headers, footers, and page numbers
+                # Filter objects to exclude headers and footers dynamically
                 text = page.filter(
                     lambda obj: (
-                        50 < obj["top"] < page.height - 60  # Exclude areas closer to the top or bottom
+                        header_height < obj["top"] < page.height - footer_height
                     )
                 ).extract_text()
 
                 if text:
-                    # Remove hyphenation at line breaks (e.g., "psy-\nchology" -> "psychology")
+                    # Remove hyphenation at line breaks
                     text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", text)
                     # Replace line breaks with spaces to preserve sentence structure
                     text = text.replace("\n", " ")
 
                 all_text.append(text)
     return " ".join(all_text)
+
 
 
 
@@ -169,12 +171,12 @@ def parse_page_range(page_range):
 
 
 
-def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range):
+def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range, header_height, footer_height):
     """Generate audio for each text chunk in specified pages of a PDF."""
-    stop_event.clear()  # Reset the stop flag at the start of the process
-    pdf_path = pdf_file.name  # Access the actual file path
-    pages = parse_page_range(page_range)  # Parse the page range input
-    text = read_pdf_with_plumber(pdf_path, pages=pages)
+    stop_event.clear()
+    pdf_path = pdf_file.name
+    pages = parse_page_range(page_range)
+    text = read_pdf_with_plumber(pdf_path, pages=pages, header_height=header_height, footer_height=footer_height)
     chunks = split_text_into_chunks(text)
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
 
@@ -217,6 +219,30 @@ def stop_process():
     """Set the stop flag to interrupt the current process."""
     stop_event.set()
     return "Process stopped."
+
+
+def preview_pdf_with_area(pdf_file, header_height, footer_height):
+    """Visualize the content area of the PDF based on header and footer heights."""
+    import pdfplumber
+
+    # Load the first page of the PDF for preview
+    with pdfplumber.open(pdf_file.name) as pdf:
+        page = pdf.pages[0]  # Show the first page as an example
+        img = page.to_image()
+
+        # Draw header and footer areas
+        header_fill = (255, 0, 0, 77)  # Red with 30% opacity
+        footer_fill = (0, 0, 255, 77)  # Blue with 30% opacity
+        img.draw_rects([{"x0": 0, "top": 0, "x1": page.width, "bottom": header_height}], stroke="red", fill=header_fill)
+        img.draw_rects([{"x0": 0, "top": page.height - footer_height, "x1": page.width, "bottom": page.height}], stroke="blue", fill=footer_fill)
+
+        # Get the underlying PIL image
+        pil_image = img.original
+        return pil_image
+
+
+
+
 
 with gr.Blocks() as demo:
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
@@ -265,10 +291,25 @@ with gr.Blocks() as demo:
             generate_pdf_button = gr.Button(value="Generate Audio")
             stop_button = gr.Button(value="Stop")
 
+    with gr.Tab("Adjust Header/Footer and Preview"):
+        with gr.Column():
+            pdf_file = gr.File(label="Upload PDF", type="file")
+            header_slider = gr.Slider(label="Header Height", minimum=0, maximum=200, value=50, step=1)
+            footer_slider = gr.Slider(label="Footer Height", minimum=0, maximum=200, value=60, step=1)
+            preview_button = gr.Button(value="Preview Content Area")
+            preview_image = gr.Image(label="Content Area Preview")
+
+    preview_button.click(
+        fn=preview_pdf_with_area,
+        inputs=[pdf_file, header_slider, footer_slider],
+        outputs=preview_image
+    )
+
     # Define button actions
     generate_pdf_button.click(
         fn=generate_audio_from_pdf,
-        inputs=[pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range],
+        inputs=[pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range,
+                header_slider, footer_slider],
         outputs=[]
     )
 
