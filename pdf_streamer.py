@@ -221,7 +221,6 @@ def stop_process():
     stop_event.set()
     return "Process stopped."
 
-
 def preview_pdf_with_area(pdf_file, header_height, footer_height, page_number):
     """Visualize the content area of the selected page of the PDF."""
     import pdfplumber
@@ -243,6 +242,7 @@ def preview_pdf_with_area(pdf_file, header_height, footer_height, page_number):
         temp_image_path = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
         img.save(temp_image_path)
         return temp_image_path
+
 
 
 
@@ -368,8 +368,13 @@ with gr.Blocks() as demo:
         outputs=[generated_audio],
     )
 
-    stop_button.click(fn=stop_process, inputs=[], outputs=[])
+    stop_message = gr.Label(value="", label="Process Status")
 
+    stop_button.click(
+        fn=stop_process,
+        inputs=[],
+        outputs=stop_message,
+    )
 
 if __name__ == "__main__":
     print("Warming up server...")
