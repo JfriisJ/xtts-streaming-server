@@ -257,21 +257,20 @@ with gr.Blocks() as demo:
         value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
     )
     lang = gr.Dropdown(label="Language", choices=LANUGAGES, value="en")
+    speaker_name_custom = gr.Dropdown(
+        label="Cloned speaker",
+        choices=cloned_speaker_names.value,
+        value=cloned_speaker_names.value[0] if len(cloned_speaker_names.value) != 0 else None,
+    )
 
     # TTS Tab
     with gr.Tab("TTS"):
         with gr.Column() as row4:
-            with gr.Row() as col4:
-                speaker_name_custom = gr.Dropdown(
-                    label="Cloned speaker",
-                    choices=cloned_speaker_names.value,
-                    value=cloned_speaker_names.value[0] if len(cloned_speaker_names.value) != 0 else None,
-                )
+            speaker_name_studio
+            speaker_name_custom
             speaker_type = gr.Dropdown(label="Speaker type", choices=["Studio", "Cloned"], value="Studio")
-        with gr.Column() as col2:
             text = gr.Textbox(label="text", value="A quick brown fox jumps over the lazy dog.")
             tts_button = gr.Button(value="TTS")
-        with gr.Column() as col3:
             generated_audio = gr.Audio(label="Generated audio", autoplay=True)
 
     # Clone Speaker Tab
@@ -281,60 +280,59 @@ with gr.Blocks() as demo:
             clone_speaker_name = gr.Textbox(label="Speaker name", value="default_speaker")
             clone_button = gr.Button(value="Clone speaker")
 
-    # Shared components
-    pdf_file = gr.File(label="Upload PDF", type="filepath")  # Shared PDF upload
-    header_slider = gr.Slider(label="Header Height", minimum=0, maximum=400, value=50, step=1)
-    footer_slider = gr.Slider(label="Footer Height", minimum=0, maximum=400, value=50, step=1)
-    page_range = gr.Textbox(label="Page Range (e.g., 1-3,5)", value="1", placeholder="Enter pages to process")
-    preview_image = gr.Image(label="Content Area Preview")
-    page_selector = gr.Number(label="Page Number", value=1, precision=0)  # Page selector for preview
 
-    # Optionally include a preview button (manual refresh)
-    preview_button = gr.Button(value="Refresh Preview")
+
+    # Generate Audio Tab
+    with gr.Tab("Generate Audio from PDF"):
+        # Shared components
+        pdf_file = gr.File(label="Upload PDF", type="filepath")  # Shared PDF upload
+        header_slider = gr.Slider(label="Header Height", minimum=0, maximum=400, value=50, step=1)
+        footer_slider = gr.Slider(label="Footer Height", minimum=0, maximum=400, value=50, step=1)
+        page_range = gr.Textbox(label="Page Range (e.g., 1-3,5)", value="1", placeholder="Enter pages to process")
+        preview_image = gr.Image(label="Content Area Preview")
+        page_selector = gr.Number(label="Page Number", value=1, precision=0)  # Page selector for preview
+
+        # Optionally include a preview button (manual refresh)
+        preview_button = gr.Button(value="Refresh Preview")
+
+
+        with gr.Column() as col3:
+            speaker_name_studio
+            speaker_name_custom
+            output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
+            generate_audio_button = gr.Button(value="Generate Audio")
+            stop_button = gr.Button(value="Stop")
+            stop_message = gr.Label(value="", label="Process Status")
+
     preview_button.click(
         fn=preview_pdf_with_area,
         inputs=[pdf_file, header_slider, footer_slider, page_selector],
         outputs=preview_image,
     )
 
-    # Generate Audio Tab
-    with gr.Tab("Generate Audio from PDF"):
-        with gr.Column():
-            speaker_name_studio = gr.Dropdown(
-                label="Studio Speaker",
-                choices=STUDIO_SPEAKERS.keys(),
-                value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
-            )
-            output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
-            generate_audio_button = gr.Button(value="Generate Audio")
-            stop_button = gr.Button(value="Stop")
+    # Dynamically update preview based on sliders or page changes
+    header_slider.change(
+        fn=preview_pdf_with_area,
+        inputs=[pdf_file, header_slider, footer_slider, page_selector],
+        outputs=preview_image,
+    )
+    footer_slider.change(
+        fn=preview_pdf_with_area,
+        inputs=[pdf_file, header_slider, footer_slider, page_selector],
+        outputs=preview_image,
+    )
+    page_selector.change(
+        fn=preview_pdf_with_area,
+        inputs=[pdf_file, header_slider, footer_slider, page_selector],
+        outputs=preview_image,
+    )
+    # Preview button for manual refresh (optional)
 
-    # Preview PDF Tab
-    with gr.Tab("Preview PDF"):
-        with gr.Column():
-            # Dynamically update preview based on sliders or page changes
-            header_slider.change(
-                fn=preview_pdf_with_area,
-                inputs=[pdf_file, header_slider, footer_slider, page_selector],
-                outputs=preview_image,
-            )
-            footer_slider.change(
-                fn=preview_pdf_with_area,
-                inputs=[pdf_file, header_slider, footer_slider, page_selector],
-                outputs=preview_image,
-            )
-            page_selector.change(
-                fn=preview_pdf_with_area,
-                inputs=[pdf_file, header_slider, footer_slider, page_selector],
-                outputs=preview_image,
-            )
-            # Preview button for manual refresh (optional)
-            preview_button = gr.Button(value="Refresh Preview")
-            preview_button.click(
-                fn=preview_pdf_with_area,
-                inputs=[pdf_file, header_slider, footer_slider, page_selector],
-                outputs=preview_image,
-            )
+    preview_button.click(
+        fn=preview_pdf_with_area,
+        inputs=[pdf_file, header_slider, footer_slider, page_selector],
+        outputs=preview_image,
+    )
 
     # Preview Button Action
     page_selector.change(
@@ -367,8 +365,6 @@ with gr.Blocks() as demo:
         inputs=[text, speaker_type, speaker_name_studio, speaker_name_custom, lang],
         outputs=[generated_audio],
     )
-
-    stop_message = gr.Label(value="", label="Process Status")
 
     stop_button.click(
         fn=stop_process,
