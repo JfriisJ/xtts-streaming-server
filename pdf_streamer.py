@@ -69,15 +69,50 @@ def read_pdf(file_path):
             text += page.extract_text()
     return text
 
+import pdfplumber
+
+def read_pdf_with_plumber(file_path):
+    """Read text from a PDF file and skip headers/footers based on position."""
+    all_text = []
+    with pdfplumber.open(file_path) as pdf:
+        for page in pdf.pages:
+            # Define the header/footer areas (adjust based on your PDF layout)
+            text = page.filter(
+                lambda obj: obj["top"] > 50 and obj["bottom"] < page.height - 50
+            ).extract_text()
+            all_text.append(text)
+    return " ".join(all_text)
+
+
+import re
+
 def split_text_into_chunks(text, max_length=250):
-    """Split text into chunks of up to max_length characters."""
-    import textwrap
-    return textwrap.wrap(text, max_length)
+    """
+    Split text into chunks of up to max_length characters,
+    ensuring the split happens at sentence boundaries if possible.
+    """
+    sentences = re.split(r'(?<=\.) ', text)  # Split by sentences
+    chunks = []
+    current_chunk = ""
+
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) + 1 <= max_length:  # +1 for the space
+            current_chunk += sentence + " "
+        else:
+            if current_chunk:  # Save the current chunk
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence + " "  # Start a new chunk
+
+    if current_chunk:  # Add the last chunk
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
 
 def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang):
     """Generate audio for each text chunk in a PDF."""
     pdf_path = pdf_file.name  # Access the actual file path
-    text = read_pdf(pdf_path)
+    text = read_pdf_with_plumber(pdf_path)
     chunks = split_text_into_chunks(text)
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
 
