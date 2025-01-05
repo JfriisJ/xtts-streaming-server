@@ -72,27 +72,39 @@ def read_pdf(file_path):
 import pdfplumber
 import re
 
-def read_pdf_with_plumber(file_path):
-    """Read text from a PDF file, skip headers/footers, and fix hyphenated word splits."""
+def read_pdf_with_plumber(file_path, pages=None):
+    """
+    Read text from a PDF file, skip headers/footers, fix hyphenated word splits,
+    and process only specified pages.
+    """
     all_text = []
     with pdfplumber.open(file_path) as pdf:
-        for page in pdf.pages:
-            # Filter objects to exclude headers, footers, and page numbers
-            text = page.filter(
-                lambda obj: (
-                                    obj["top"] > 50 and obj["bottom"] < page.height - 50
-                            ) or not re.match(r"^\s*(Page\s*\d+|[0-9]+|Page\s*\d+\s*of\s*\d+)\s*$",
-                                              str(obj.get("text", "")), re.IGNORECASE)
-            ).extract_text()
+        # Determine pages to process
+        selected_pages = range(len(pdf.pages)) if pages is None else pages
 
-            if text:
-                # Remove hyphenation at line breaks (e.g., "psy-\nchology" -> "psychology")
-                text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", text)
-                # Replace line breaks with spaces to preserve sentence structure
-                text = text.replace("\n", " ")
+        for page_num in selected_pages:
+            if page_num < len(pdf.pages):  # Ensure the page exists
+                page = pdf.pages[page_num]
+                # Filter objects to exclude headers, footers, and page numbers
+                text = page.filter(
+                    lambda obj: (
+                        50 < obj["top"] < page.height - 60  # Exclude areas closer to the top or bottom
+                    ) and not re.match(
+                        r"^\s*(Page\s*\d+|[0-9]+|Page\s*\d+\s*of\s*\d+)\s*$",  # Page number patterns
+                        str(obj.get("text", "")),
+                        re.IGNORECASE
+                    )
+                ).extract_text()
 
-            all_text.append(text)
+                if text:
+                    # Remove hyphenation at line breaks (e.g., "psy-\nchology" -> "psychology")
+                    text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", text)
+                    # Replace line breaks with spaces to preserve sentence structure
+                    text = text.replace("\n", " ")
+
+                all_text.append(text)
     return " ".join(all_text)
+
 
 
 def split_text_into_chunks(text, max_chars=250, max_tokens=300):
@@ -141,15 +153,13 @@ def split_text_into_chunks(text, max_chars=250, max_tokens=300):
 
     return chunks
 
-
-
-
 import base64
 
-def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang):
-    """Generate audio for each text chunk in a PDF."""
+def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, pages):
+    """Generate audio for each text chunk in specified pages of a PDF."""
     pdf_path = pdf_file.name  # Access the actual file path
-    text = read_pdf_with_plumber(pdf_path)
+    pages = [int(p) - 1 for p in pages.split(",") if p.isdigit()]  # Convert page numbers to zero-based index
+    text = read_pdf_with_plumber(pdf_path, pages=pages)
     chunks = split_text_into_chunks(text)
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
 
@@ -185,6 +195,7 @@ def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_stu
 
 
 
+
 with gr.Blocks() as demo:
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
     with gr.Tab("TTS"):
@@ -215,12 +226,13 @@ with gr.Blocks() as demo:
     with gr.Tab("Generate Audio from PDF"):
         with gr.Column():
             pdf_file = gr.File(label="Upload PDF", type="file")
+            page_range = gr.Textbox(label="Page Range (e.g., 1,2,3 or 1-3)", value="1")  # Input for page selection
             generate_pdf_button = gr.Button(value="Generate Audio")
             output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
 
     generate_pdf_button.click(
         fn=generate_audio_from_pdf,
-        inputs=[pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang],
+        inputs=[pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range],
         outputs=[]
     )
 
