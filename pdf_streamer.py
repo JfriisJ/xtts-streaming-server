@@ -70,16 +70,27 @@ def read_pdf(file_path):
     return text
 
 import pdfplumber
+import re
 
 def read_pdf_with_plumber(file_path):
-    """Read text from a PDF file and skip headers/footers based on position."""
+    """Read text from a PDF file, skip headers/footers, and fix hyphenated word splits."""
     all_text = []
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
-            # Define the header/footer areas (adjust based on your PDF layout)
+            # Filter objects to exclude headers, footers, and page numbers
             text = page.filter(
-                lambda obj: obj["top"] > 50 and obj["bottom"] < page.height - 50
+                lambda obj: (
+                                    obj["top"] > 50 and obj["bottom"] < page.height - 50
+                            ) or not re.match(r"^\s*(Page\s*\d+|[0-9]+|Page\s*\d+\s*of\s*\d+)\s*$",
+                                              str(obj.get("text", "")), re.IGNORECASE)
             ).extract_text()
+
+            if text:
+                # Remove hyphenation at line breaks (e.g., "psy-\nchology" -> "psychology")
+                text = re.sub(r"(\w+)-\n(\w+)", r"\1\2", text)
+                # Replace line breaks with spaces to preserve sentence structure
+                text = text.replace("\n", " ")
+
             all_text.append(text)
     return " ".join(all_text)
 
