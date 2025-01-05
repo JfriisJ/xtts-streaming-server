@@ -13,7 +13,7 @@ RUN python -m pip install --use-deprecated=legacy-resolver -r requirements.txt \
 RUN python -m unidic download
 RUN mkdir -p /app/tts_models
 
-COPY main.py .
+COPY . .
 
 #Mark this 1 if you have older card
 ENV NVIDIA_DISABLE_REQUIRE=0
