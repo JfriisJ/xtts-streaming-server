@@ -10,6 +10,11 @@ SERVER_URL = 'http://localhost:8000'
 OUTPUT = "./demo_outputs"
 cloned_speakers = {}
 
+from threading import Event
+
+stop_event = Event()
+
+
 print("Preparing file structure...")
 if not os.path.exists(OUTPUT):
     os.mkdir(OUTPUT)
@@ -89,10 +94,6 @@ def read_pdf_with_plumber(file_path, pages=None):
                 text = page.filter(
                     lambda obj: (
                         50 < obj["top"] < page.height - 60  # Exclude areas closer to the top or bottom
-                    ) and not re.match(
-                        r"^\s*(Page\s*\d+|[0-9]+|Page\s*\d+\s*of\s*\d+)\s*$",  # Page number patterns
-                        str(obj.get("text", "")),
-                        re.IGNORECASE
                     )
                 ).extract_text()
 
@@ -153,17 +154,35 @@ def split_text_into_chunks(text, max_chars=250, max_tokens=300):
 
     return chunks
 
-import base64
+def parse_page_range(page_range):
+    """
+    Parse a page range string (e.g., "1-3,5") into a list of zero-based page indices.
+    """
+    pages = []
+    for part in page_range.split(","):
+        if "-" in part:
+            start, end = map(int, part.split("-"))
+            pages.extend(range(start - 1, end))  # Convert to zero-based indices
+        else:
+            pages.append(int(part) - 1)
+    return pages
 
-def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, pages):
+
+
+def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range):
     """Generate audio for each text chunk in specified pages of a PDF."""
+    stop_event.clear()  # Reset the stop flag at the start of the process
     pdf_path = pdf_file.name  # Access the actual file path
-    pages = [int(p) - 1 for p in pages.split(",") if p.isdigit()]  # Convert page numbers to zero-based index
+    pages = parse_page_range(page_range)  # Parse the page range input
     text = read_pdf_with_plumber(pdf_path, pages=pages)
     chunks = split_text_into_chunks(text)
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
 
     for i, chunk in enumerate(chunks):
+        if stop_event.is_set():
+            print("Process stopped by user.")
+            break  # Exit the loop if the stop flag is set
+
         if len(chunk) > 250:
             print(f"Warning: Chunk {i + 1} exceeds 250 characters and might cause truncation.")
 
@@ -194,7 +213,10 @@ def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_stu
         print(f"Saved audio chunk {i + 1} to {audio_path}")
 
 
-
+def stop_process():
+    """Set the stop flag to interrupt the current process."""
+    stop_event.set()
+    return "Process stopped."
 
 with gr.Blocks() as demo:
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
@@ -227,8 +249,9 @@ with gr.Blocks() as demo:
         with gr.Column():
             pdf_file = gr.File(label="Upload PDF", type="file")
             page_range = gr.Textbox(label="Page Range (e.g., 1,2,3 or 1-3)", value="1")  # Input for page selection
-            generate_pdf_button = gr.Button(value="Generate Audio")
             output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
+            generate_pdf_button = gr.Button(value="Generate Audio")
+            stop_button = gr.Button(value="Stop")
 
     generate_pdf_button.click(
         fn=generate_audio_from_pdf,
@@ -248,7 +271,11 @@ with gr.Blocks() as demo:
         outputs=[generated_audio],
     )
 
-
+    stop_button.click(
+        fn=stop_process,
+        inputs=[],
+        outputs=[]
+    )
 
 
 if __name__ == "__main__":
