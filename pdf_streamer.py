@@ -174,16 +174,16 @@ def parse_page_range(page_range):
 def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range, header_height, footer_height):
     """Generate audio for each text chunk in specified pages of a PDF."""
     stop_event.clear()
-    pdf_path = pdf_file.name
-    pages = parse_page_range(page_range)
+    pdf_path = pdf_file.name  # Access the shared PDF file path
+    pages = parse_page_range(page_range)  # Parse the page range
     text = read_pdf_with_plumber(pdf_path, pages=pages, header_height=header_height, footer_height=footer_height)
     chunks = split_text_into_chunks(text)
-    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
+    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speaker_names[speaker_name_custom]
 
     for i, chunk in enumerate(chunks):
         if stop_event.is_set():
             print("Process stopped by user.")
-            break  # Exit the loop if the stop flag is set
+            break
 
         if len(chunk) > 250:
             print(f"Warning: Chunk {i + 1} exceeds 250 characters and might cause truncation.")
@@ -215,19 +215,22 @@ def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_stu
         print(f"Saved audio chunk {i + 1} to {audio_path}")
 
 
+
 def stop_process():
     """Set the stop flag to interrupt the current process."""
     stop_event.set()
     return "Process stopped."
 
 
-def preview_pdf_with_area(pdf_file, header_height, footer_height):
-    """Visualize the content area of the PDF based on header and footer heights."""
+def preview_pdf_with_area(pdf_file, header_height, footer_height, page_number):
+    """Visualize the content area of the selected page of the PDF."""
     import pdfplumber
 
-    # Load the first page of the PDF for preview
+    # Load the selected page of the PDF for preview
     with pdfplumber.open(pdf_file.name) as pdf:
-        page = pdf.pages[0]  # Show the first page as an example
+        if page_number < 1 or page_number > len(pdf.pages):
+            return "Invalid page number selected."
+        page = pdf.pages[int(page_number) - 1]  # Convert 1-based page_number to 0-based index
         img = page.to_image()
 
         # Draw header and footer areas
@@ -236,10 +239,10 @@ def preview_pdf_with_area(pdf_file, header_height, footer_height):
         img.draw_rects([{"x0": 0, "top": 0, "x1": page.width, "bottom": header_height}], stroke="red", fill=header_fill)
         img.draw_rects([{"x0": 0, "top": page.height - footer_height, "x1": page.width, "bottom": page.height}], stroke="blue", fill=footer_fill)
 
-        # Get the underlying PIL image
-        pil_image = img.original
-        return pil_image
-
+        # Save the image to a temporary file and return its path
+        temp_image_path = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+        img.save(temp_image_path)
+        return temp_image_path
 
 
 
@@ -247,7 +250,7 @@ def preview_pdf_with_area(pdf_file, header_height, footer_height):
 with gr.Blocks() as demo:
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
 
-    # Define shared dropdowns for studio speaker and language
+    # TTS and Studio Speaker Settings
     speaker_name_studio = gr.Dropdown(
         label="Studio speaker",
         choices=STUDIO_SPEAKERS.keys(),
@@ -259,7 +262,6 @@ with gr.Blocks() as demo:
     with gr.Tab("TTS"):
         with gr.Column() as row4:
             with gr.Row() as col4:
-                speaker_name_studio  # Use the shared component
                 speaker_name_custom = gr.Dropdown(
                     label="Cloned speaker",
                     choices=cloned_speaker_names.value,
@@ -267,7 +269,6 @@ with gr.Blocks() as demo:
                 )
             speaker_type = gr.Dropdown(label="Speaker type", choices=["Studio", "Cloned"], value="Studio")
         with gr.Column() as col2:
-            lang  # Use the shared component
             text = gr.Textbox(label="text", value="A quick brown fox jumps over the lazy dog.")
             tts_button = gr.Button(value="TTS")
         with gr.Column() as col3:
@@ -280,37 +281,79 @@ with gr.Blocks() as demo:
             clone_speaker_name = gr.Textbox(label="Speaker name", value="default_speaker")
             clone_button = gr.Button(value="Clone speaker")
 
-    # Generate Audio from PDF Tab
-    with gr.Tab("Generate Audio from PDF"):
-        with gr.Column():
-            pdf_file = gr.File(label="Upload PDF", type="file")
-            page_range = gr.Textbox(label="Page Range (e.g., 1,2,3 or 1-3)", value="1")
-            output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
-            speaker_name_studio  # Use the shared component
-            lang  # Use the shared component
-            generate_pdf_button = gr.Button(value="Generate Audio")
-            stop_button = gr.Button(value="Stop")
+    # Shared components
+    pdf_file = gr.File(label="Upload PDF", type="filepath")  # Shared PDF upload
+    header_slider = gr.Slider(label="Header Height", minimum=0, maximum=400, value=50, step=1)
+    footer_slider = gr.Slider(label="Footer Height", minimum=0, maximum=400, value=50, step=1)
+    page_range = gr.Textbox(label="Page Range (e.g., 1-3,5)", value="1", placeholder="Enter pages to process")
+    preview_image = gr.Image(label="Content Area Preview")
+    page_selector = gr.Number(label="Page Number", value=1, precision=0)  # Page selector for preview
 
-    with gr.Tab("Adjust Header/Footer and Preview"):
-        with gr.Column():
-            pdf_file = gr.File(label="Upload PDF", type="file")
-            header_slider = gr.Slider(label="Header Height", minimum=0, maximum=200, value=50, step=1)
-            footer_slider = gr.Slider(label="Footer Height", minimum=0, maximum=200, value=60, step=1)
-            preview_button = gr.Button(value="Preview Content Area")
-            preview_image = gr.Image(label="Content Area Preview")
-
+    # Optionally include a preview button (manual refresh)
+    preview_button = gr.Button(value="Refresh Preview")
     preview_button.click(
         fn=preview_pdf_with_area,
-        inputs=[pdf_file, header_slider, footer_slider],
-        outputs=preview_image
+        inputs=[pdf_file, header_slider, footer_slider, page_selector],
+        outputs=preview_image,
     )
 
-    # Define button actions
-    generate_pdf_button.click(
+    # Generate Audio Tab
+    with gr.Tab("Generate Audio from PDF"):
+        with gr.Column():
+            speaker_name_studio = gr.Dropdown(
+                label="Studio Speaker",
+                choices=STUDIO_SPEAKERS.keys(),
+                value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
+            )
+            output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
+            generate_audio_button = gr.Button(value="Generate Audio")
+            stop_button = gr.Button(value="Stop")
+
+    # Preview PDF Tab
+    with gr.Tab("Preview PDF"):
+        with gr.Column():
+            # Dynamically update preview based on sliders or page changes
+            header_slider.change(
+                fn=preview_pdf_with_area,
+                inputs=[pdf_file, header_slider, footer_slider, page_selector],
+                outputs=preview_image,
+            )
+            footer_slider.change(
+                fn=preview_pdf_with_area,
+                inputs=[pdf_file, header_slider, footer_slider, page_selector],
+                outputs=preview_image,
+            )
+            page_selector.change(
+                fn=preview_pdf_with_area,
+                inputs=[pdf_file, header_slider, footer_slider, page_selector],
+                outputs=preview_image,
+            )
+            # Preview button for manual refresh (optional)
+            preview_button = gr.Button(value="Refresh Preview")
+            preview_button.click(
+                fn=preview_pdf_with_area,
+                inputs=[pdf_file, header_slider, footer_slider, page_selector],
+                outputs=preview_image,
+            )
+
+    # Preview Button Action
+    page_selector.change(
+        fn=preview_pdf_with_area,
+        inputs=[pdf_file, header_slider, footer_slider, page_selector],
+        outputs=preview_image,
+    )
+
+    # Preview Button Action
+    preview_button.click(
+        fn=preview_pdf_with_area,
+        inputs=[pdf_file, header_slider, footer_slider, page_selector],
+        outputs=preview_image
+    )
+    # Generate Audio Button Action
+    generate_audio_button.click(
         fn=generate_audio_from_pdf,
-        inputs=[pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range,
-                header_slider, footer_slider],
-        outputs=[]
+        inputs=[pdf_file, output_dir, speaker_type, speaker_name_studio, cloned_speaker_names, lang, page_range, header_slider, footer_slider],
+        outputs=[],
     )
 
     clone_button.click(
@@ -325,11 +368,7 @@ with gr.Blocks() as demo:
         outputs=[generated_audio],
     )
 
-    stop_button.click(
-        fn=stop_process,
-        inputs=[],
-        outputs=[]
-    )
+    stop_button.click(fn=stop_process, inputs=[], outputs=[])
 
 
 if __name__ == "__main__":
