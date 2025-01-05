@@ -250,6 +250,12 @@ with gr.Blocks() as demo:
             pdf_file = gr.File(label="Upload PDF", type="file")
             page_range = gr.Textbox(label="Page Range (e.g., 1,2,3 or 1-3)", value="1")  # Input for page selection
             output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
+            speaker_name_studio = gr.Dropdown(
+                label="Studio speaker",
+                choices=STUDIO_SPEAKERS.keys(),
+                value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
+            )
+            lang = gr.Dropdown(label="Language", choices=LANUGAGES, value="en")
             generate_pdf_button = gr.Button(value="Generate Audio")
             stop_button = gr.Button(value="Stop")
 
