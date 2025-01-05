@@ -220,14 +220,20 @@ def stop_process():
 
 with gr.Blocks() as demo:
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
+
+    # Define shared dropdowns for studio speaker and language
+    speaker_name_studio = gr.Dropdown(
+        label="Studio speaker",
+        choices=STUDIO_SPEAKERS.keys(),
+        value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
+    )
+    lang = gr.Dropdown(label="Language", choices=LANUGAGES, value="en")
+
+    # TTS Tab
     with gr.Tab("TTS"):
         with gr.Column() as row4:
             with gr.Row() as col4:
-                speaker_name_studio = gr.Dropdown(
-                    label="Studio speaker",
-                    choices=STUDIO_SPEAKERS.keys(),
-                    value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
-                )
+                speaker_name_studio  # Use the shared component
                 speaker_name_custom = gr.Dropdown(
                     label="Cloned speaker",
                     choices=cloned_speaker_names.value,
@@ -235,30 +241,31 @@ with gr.Blocks() as demo:
                 )
             speaker_type = gr.Dropdown(label="Speaker type", choices=["Studio", "Cloned"], value="Studio")
         with gr.Column() as col2:
-            lang = gr.Dropdown(label="Language", choices=LANUGAGES, value="en")
+            lang  # Use the shared component
             text = gr.Textbox(label="text", value="A quick brown fox jumps over the lazy dog.")
             tts_button = gr.Button(value="TTS")
         with gr.Column() as col3:
             generated_audio = gr.Audio(label="Generated audio", autoplay=True)
+
+    # Clone Speaker Tab
     with gr.Tab("Clone a new speaker"):
         with gr.Column() as col1:
             upload_file = gr.Audio(label="Upload reference audio", type="filepath")
             clone_speaker_name = gr.Textbox(label="Speaker name", value="default_speaker")
             clone_button = gr.Button(value="Clone speaker")
+
+    # Generate Audio from PDF Tab
     with gr.Tab("Generate Audio from PDF"):
         with gr.Column():
             pdf_file = gr.File(label="Upload PDF", type="file")
-            page_range = gr.Textbox(label="Page Range (e.g., 1,2,3 or 1-3)", value="1")  # Input for page selection
+            page_range = gr.Textbox(label="Page Range (e.g., 1,2,3 or 1-3)", value="1")
             output_dir = gr.Textbox(label="Output Directory", value="./demo_outputs/generated_audios")
-            speaker_name_studio = gr.Dropdown(
-                label="Studio speaker",
-                choices=STUDIO_SPEAKERS.keys(),
-                value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
-            )
-            lang = gr.Dropdown(label="Language", choices=LANUGAGES, value="en")
+            speaker_name_studio  # Use the shared component
+            lang  # Use the shared component
             generate_pdf_button = gr.Button(value="Generate Audio")
             stop_button = gr.Button(value="Stop")
 
+    # Define button actions
     generate_pdf_button.click(
         fn=generate_audio_from_pdf,
         inputs=[pdf_file, output_dir, speaker_type, speaker_name_studio, speaker_name_custom, lang, page_range],
