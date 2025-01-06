@@ -120,7 +120,7 @@ def tts(text, speaker_type, speaker_name_studio, speaker_name_custom, lang):
         try:
             decoded_audio = base64.b64decode(generated_audio)
         except binascii.Error as e:
-            print(f"Error decoding audio for chunk: {chunk}")
+            print(f"Error decoding audio for chunk: {e}")
             continue
 
         audio_path = os.path.join("demo_outputs", "generated_audios", next(tempfile._get_candidate_names()) + ".wav")
