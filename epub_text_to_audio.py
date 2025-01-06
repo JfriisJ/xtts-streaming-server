@@ -53,7 +53,7 @@ def process_file(file):
 
 
 def extract_text_filtered(epub_file):
-    book = epub.read_epub(epub_file, ignore_ncx=False)
+    book = epub.read_epub(epub_file)
 
     sections = []
     for item in book.get_items():
@@ -76,8 +76,10 @@ def extract_text_filtered(epub_file):
                     sections.append({"title": section_title, "content": "\n".join(section_content)})
     return sections
 
+
 def text_to_audio(text, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None):
-    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
+    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[
+        speaker_name_custom]
     chunks = split_text_into_chunks(text)
     generated_audio_paths = []
     for chunk in chunks:
@@ -103,7 +105,16 @@ def text_to_audio(text, lang="en", speaker_type="Studio", speaker_name_studio=No
         with open(audio_path, "wb") as fp:
             fp.write(decoded_audio)
             generated_audio_paths.append(audio_path)
-    return generated_audio_paths
+
+    # If multiple audio paths, concatenate them into a single file
+    if len(generated_audio_paths) > 1:
+        combined_audio_path = concatenate_audios(generated_audio_paths)
+        return combined_audio_path  # Return single combined file path
+    elif generated_audio_paths:
+        return generated_audio_paths[0]  # Return single file path
+    else:
+        return None  # Return None if no audio was generated
+
 
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
     import re
@@ -200,7 +211,7 @@ with gr.Blocks() as demo:
         generate_audio_button.click(
             text_to_audio,
             inputs=[section_preview, lang, speaker_type, speaker_name_studio, speaker_name_custom],
-            outputs=[audio_output]
+            outputs=[audio_output]  # Now it will process a single audio file path
         )
 
     demo.launch(
