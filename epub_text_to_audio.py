@@ -37,24 +37,24 @@ try:
 except:
     raise Exception("Please make sure the server is running first.")
 
+
 # Helper Functions
 
 def process_file(file):
     if file.name.endswith('.epub'):
         sections = extract_text_filtered(file.name)
         section_titles = [section["title"] for section in sections]
-        return gr.update(choices=section_titles, value=None), sections
+        return gr.update(choices=section_titles, value=section_titles[0] if section_titles else None), sections
     elif file.name.endswith('.txt'):
         with open(file.name, 'r', encoding='utf-8') as f:
             text = f.read()
-        return gr.update(choices=[], value=None), [{"title": "Text File Content", "content": text}]
+        return gr.update(choices=["Text File Content"], value="Text File Content"), [{"title": "Text File Content", "content": text}]
     else:
         return gr.update(choices=[], value=None), []
 
 
 def extract_text_filtered(epub_file):
     book = epub.read_epub(epub_file)
-
     sections = []
     for item in book.get_items():
         if item.get_type() == ebooklib.ITEM_DOCUMENT:
@@ -77,12 +77,11 @@ def extract_text_filtered(epub_file):
     return sections
 
 
-def text_to_audio(text, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None):
-    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[
-        speaker_name_custom]
-    chunks = split_text_into_chunks(text)
+def text_to_audio_with_heading(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None):
+    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
+    chunks = split_text_into_chunks(heading + "\n" + text)
     generated_audio_paths = []
-    for chunk in chunks:
+    for idx, chunk in enumerate(chunks):
         response = requests.post(
             SERVER_URL + "/tts",
             json={
@@ -101,7 +100,7 @@ def text_to_audio(text, lang="en", speaker_type="Studio", speaker_name_studio=No
         except binascii.Error as e:
             print(f"Error decoding audio for chunk: {e}")
             continue
-        audio_path = os.path.join("demo_outputs", "generated_audios", next(tempfile._get_candidate_names()) + ".wav")
+        audio_path = os.path.join("demo_outputs", "generated_audios", f"{heading}_{idx + 1}.wav")
         with open(audio_path, "wb") as fp:
             fp.write(decoded_audio)
             generated_audio_paths.append(audio_path)
@@ -109,7 +108,9 @@ def text_to_audio(text, lang="en", speaker_type="Studio", speaker_name_studio=No
     # If multiple audio paths, concatenate them into a single file
     if len(generated_audio_paths) > 1:
         combined_audio_path = concatenate_audios(generated_audio_paths)
-        return combined_audio_path  # Return single combined file path
+        final_path = os.path.join("demo_outputs", "generated_audios", f"{heading}.wav")
+        os.rename(combined_audio_path, final_path)
+        return final_path  # Return single combined file path
     elif generated_audio_paths:
         return generated_audio_paths[0]  # Return single file path
     else:
@@ -154,7 +155,7 @@ def concatenate_audios(audio_paths):
     for path in audio_paths:
         audio = AudioSegment.from_file(path)
         combined += audio
-    output_path = os.path.join("demo_outputs", "generated_audios", "combined_audio.wav")
+    output_path = os.path.join("demo_outputs", "generated_audios", "combined_audio_temp.wav")
     combined.export(output_path, format="wav")
     return output_path
 
@@ -163,6 +164,11 @@ def display_section(selected_title, sections):
         if section["title"] == selected_title:
             return section["content"]
     return "Section not found."
+
+
+def get_section_title(selected_title):
+    return selected_title
+
 
 
 # Gradio Interface
@@ -209,8 +215,8 @@ with gr.Blocks() as demo:
         audio_output = gr.Audio(label="Generated Audio")
 
         generate_audio_button.click(
-            text_to_audio,
-            inputs=[section_preview, lang, speaker_type, speaker_name_studio, speaker_name_custom],
+            text_to_audio_with_heading,
+            inputs=[section_preview, section_titles, lang, speaker_type, speaker_name_studio, speaker_name_custom],
             outputs=[audio_output]  # Now it will process a single audio file path
         )
 
