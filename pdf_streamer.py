@@ -175,6 +175,7 @@ def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_stu
     """Generate audio for each text chunk in specified pages of a PDF."""
     stop_event.clear()
     pdf_path = pdf_file.name  # Access the shared PDF file path
+    pdf_title = os.path.splitext(os.path.basename(pdf_path))[0]  # Get the PDF title without extension
     pages = parse_page_range(page_range)  # Parse the page range
     text = read_pdf_with_plumber(pdf_path, pages=pages, header_height=header_height, footer_height=footer_height)
     chunks = split_text_into_chunks(text)
@@ -209,7 +210,9 @@ def generate_audio_from_pdf(pdf_file, output_dir, speaker_type, speaker_name_stu
             print(f"Error decoding base64 for chunk {i + 1}: {e}")
             continue
 
-        audio_path = os.path.join(output_dir, f"audio_chunk_{i + 1}.wav")
+        # Create a unique filename using the PDF title and chunk number
+        audio_filename = f"{pdf_title}_{i + 1}.wav"
+        audio_path = os.path.join(output_dir, audio_filename)
         with open(audio_path, "wb") as audio_file:
             audio_file.write(decoded_audio)
         print(f"Saved audio chunk {i + 1} to {audio_path}")
@@ -391,5 +394,5 @@ if __name__ == "__main__":
         share=False,
         debug=False,
         server_port=3009,
-        server_name="0.0.0.0",
+        server_name="localhost",
     )

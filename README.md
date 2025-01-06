@@ -50,8 +50,8 @@ To build the Docker container Pytorch 2.1 and CUDA 11.8 :
 $ git clone git@github.com:coqui-ai/xtts-streaming-server.git
 $ cd xtts-streaming-server/server
 $ docker build -t xtts-stream . -f DOCKERFILE
-$ docker run --gpus all -e COQUI_TOS_AGREED=1 --rm -p 8000:80 xtts-stream
 ```
+
 
 Setting the `COQUI_TOS_AGREED` environment variable to `1` indicates you have read and agreed to
 the terms of the [CPML license](https://coqui.ai/cpml). (Fine-tuned XTTS models also are under the [CPML license](https://coqui.ai/cpml))
@@ -80,4 +80,11 @@ $ python demo.py
 $ cd xtts-streaming-server/test
 $ python -m pip install -r requirements.txt
 $ python test_streaming.py
+```
+
+```bash
+$ docker run --gpus all -e COQUI_TOS_AGREED=1 --rm -p 8000:80 xtts-stream
+```
+```bash
+$python pdf_streamer.py
 ```
