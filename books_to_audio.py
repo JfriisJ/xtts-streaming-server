@@ -5,6 +5,7 @@ import base64
 import json
 
 import pdfplumber
+from docx import Document
 import re
 import ebooklib
 import requests
@@ -58,6 +59,13 @@ def process_file(file, header_height=1, footer_height=1):
         initial_preview = sections[0]["content"] if sections else "No content available."
         return dropdown_output, sections, initial_preview
 
+    elif file.name.endswith('.docx'):
+        sections = extract_text_filtered_docx(file.name)
+        section_titles = [section["title"] for section in sections]
+        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
+        initial_preview = sections[0]["content"] if sections else "No content available."
+        return dropdown_output, sections, initial_preview
+
     elif file.name.endswith('.txt'):
         with open(file.name, 'r', encoding='utf-8') as f:
             text = f.read()
@@ -89,6 +97,33 @@ def update_pdf_controls(file):
             gr.update(visible=False)   # preview_image
         )
 
+
+def extract_text_filtered_docx(docx_file):
+    """
+    Extract text from a DOCX file, separating content by headings (if present).
+    """
+    document = Document(docx_file)
+    sections = []
+    current_section = None
+    current_text = []
+
+    for paragraph in document.paragraphs:
+        if paragraph.style.name.startswith("Heading"):
+            # Save current section before starting a new one
+            if current_section and current_text:
+                sections.append({"title": current_section, "content": "\n".join(current_text)})
+                current_text = []
+            current_section = paragraph.text.strip()
+        else:
+            # Add paragraph text to the current section
+            if paragraph.text.strip():
+                current_text.append(paragraph.text.strip())
+
+    # Save the last section
+    if current_section and current_text:
+        sections.append({"title": current_section, "content": "\n".join(current_text)})
+
+    return sections
 
 def extract_text_filtered_pdf(pdf_file, header_height, footer_height):
     """
@@ -301,7 +336,7 @@ with gr.Blocks() as demo:
 
 
     with gr.Row():
-        file_input = gr.File(label="Upload Text, EPUB, or PDF File", file_types=[".epub", ".txt", ".pdf"])
+        file_input = gr.File(label="Upload Text, EPUB, PDF or Docx File", file_types=[".epub", ".txt", ".pdf", ".docx"])
 
     with gr.Row():
         speaker_type = gr.Dropdown(label="Speaker type", choices=["Studio", "Cloned"], value="Studio")
@@ -326,7 +361,7 @@ with gr.Blocks() as demo:
         preview_image = gr.Image(visible=False, label="Preview with Header/Footer")
 
     # Text/Section Processing Tab
-    with gr.Tab("Process Text/EPUB/PDF"):
+    with gr.Tab("Process Text/EPUB/PDF/docx"):
         process_button = gr.Button("Process File")
         section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
         section_preview = gr.Textbox(label="Preview Section Content", lines=10)
