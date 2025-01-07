@@ -4,6 +4,7 @@ import tempfile
 import base64
 import json
 
+import shutil
 import pdfplumber
 from docx import Document
 import re
@@ -48,37 +49,93 @@ def process_file(file, header_height=1, footer_height=1):
     if file is None:
         return gr.update(choices=[], value=None), [], "No file uploaded."
 
+    def flatten_sections(sections):
+        """
+        Flattens the hierarchical sections into a single list for dropdown choices.
+        """
+        flat_list = []
+        for section in sections:
+            flat_list.append({"title": section["title"], "content": section["content"]})
+            for subsection in section.get("subsections", []):
+                flat_list.append({"title": subsection["title"], "content": subsection["content"]})
+                for subsubsection in subsection.get("subsubsections", []):
+                    flat_list.append({"title": subsubsection["title"], "content": subsubsection["content"]})
+        return flat_list
+
+    # Process based on file type
     if file.name.endswith('.pdf'):
         sections = extract_text_filtered_pdf(file.name, header_height, footer_height)
-        section_titles = [section["title"] for section in sections]
-        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
-        initial_preview = sections[0]["content"] if sections else "No content available."
-        return dropdown_output, sections, initial_preview
-
     elif file.name.endswith('.epub'):
         sections = extract_text_filtered_epub(file.name)
-        section_titles = [section["title"] for section in sections]
-        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
-        initial_preview = sections[0]["content"] if sections else "No content available."
-        return dropdown_output, sections, initial_preview
-
     elif file.name.endswith('.docx'):
         sections = extract_text_filtered_docx(file.name)
-        section_titles = [section["title"] for section in sections]
-        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
-        initial_preview = sections[0]["content"] if sections else "No content available."
-        return dropdown_output, sections, initial_preview
-
     elif file.name.endswith('.txt'):
-        with open(file.name, 'r', encoding='utf-8') as f:
-            text = f.read()
-        dropdown_output = gr.update(choices=["Text File Content"], value="Text File Content")
-        initial_preview = text
-        return dropdown_output, [{"title": "Text File Content", "content": text}], initial_preview
-
+        sections = extract_text_filtered_txt(file.name)
     else:
         return gr.update(choices=[], value=None), [], "Unsupported file format."
 
+    # Flatten sections for dropdown
+    flat_sections = flatten_sections(sections)
+    section_titles = [item["title"] for item in flat_sections]
+    dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
+    initial_preview = flat_sections[0]["content"] if flat_sections else "No content available."
+
+    return dropdown_output, flat_sections, initial_preview
+
+
+def extract_text_filtered_txt(file_path):
+    """
+    Process a plain text file and structure it into sections, subsections, and subsubsections.
+    """
+    sections = []
+    section = None
+    subsection = None
+    subsubsection = None
+
+    with open(file_path, "r", encoding="utf-8") as file:
+        lines = file.readlines()
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue  # Skip empty lines
+
+        # Detect sections (e.g., "3. ")
+        if re.match(r"^\d+\.\s", line):
+            if section:
+                sections.append(section)
+            section = {"title": line, "content": "", "subsections": []}
+            subsection = None
+            subsubsection = None
+        # Detect subsections (e.g., "3.1. ")
+        elif re.match(r"^\d+\.\d+\.\s", line):
+            if subsection:
+                section["subsections"].append(subsection)
+            subsection = {"title": line, "content": "", "subsubsections": []}
+            subsubsection = None
+        # Detect subsubsections (e.g., "3.1.1. ")
+        elif re.match(r"^\d+\.\d+\.\d+\.\s", line):
+            if subsubsection:
+                subsection["subsubsections"].append(subsubsection)
+            subsubsection = {"title": line, "content": ""}
+        else:
+            # Add content to the current level
+            if subsubsection:
+                subsubsection["content"] += line + " "
+            elif subsection:
+                subsection["content"] += line + " "
+            elif section:
+                section["content"] += line + " "
+
+    # Append the last section, subsection, or subsubsection
+    if subsubsection:
+        subsection["subsubsections"].append(subsubsection)
+    if subsection:
+        section["subsections"].append(subsection)
+    if section:
+        sections.append(section)
+
+    return sections
 
 
 
@@ -112,55 +169,84 @@ def update_pdf_controls(file):
 
 def extract_text_filtered_docx(docx_file):
     """
-    Extract text from a DOCX file, separating content by headings (if present).
+    Extract text from a DOCX file, separating content by headings (if present),
+    and adding hierarchical numbering (e.g., 1, 1.1, 1.1.1).
     """
     document = Document(docx_file)
     sections = []
-    current_section = None
-    current_text = []
+    section_counter = 0
+    subsection_counter = 0
+    subsubsection_counter = 0
+    current_level = 0
 
     for paragraph in document.paragraphs:
         if paragraph.style.name.startswith("Heading"):
-            # Save current section before starting a new one
-            if current_section and current_text:
-                sections.append({"title": current_section, "content": "\n".join(current_text)})
-                current_text = []
-            current_section = paragraph.text.strip()
+            heading_level = int(paragraph.style.name[-1])  # Extract heading level (e.g., Heading 1 -> 1)
+
+            # Adjust counters based on the heading level
+            if heading_level == 1:
+                section_counter += 1
+                subsection_counter = 0
+                subsubsection_counter = 0
+                current_title = f"Section {section_counter}: {paragraph.text.strip()}"
+            elif heading_level == 2:
+                subsection_counter += 1
+                subsubsection_counter = 0
+                current_title = f"Subsection {section_counter}.{subsection_counter}: {paragraph.text.strip()}"
+            elif heading_level == 3:
+                subsubsection_counter += 1
+                current_title = f"Subsubsection {section_counter}.{subsection_counter}.{subsubsection_counter}: {paragraph.text.strip()}"
+            else:
+                print(f"Skipping unsupported heading: {paragraph.text.strip()}")
+
+            # Add the section with its hierarchical number
+            sections.append({"title": current_title, "content": ""})
+
         else:
-            # Add paragraph text to the current section
-            if paragraph.text.strip():
-                current_text.append(paragraph.text.strip())
+            # Add paragraph text to the latest section
+            if sections:
+                sections[-1]["content"] += paragraph.text.strip() + "\n"
 
-    # Save the last section
-    if current_section and current_text:
-        sections.append({"title": current_section, "content": "\n".join(current_text)})
+    # Filter out empty sections
+    return [section for section in sections if section["content"].strip()]
 
-    return sections
 
 def extract_text_filtered_pdf(pdf_file, header_height, footer_height):
     """
-    Extract structured text from a PDF, organized by headings (H1, H2, H3),
-    and dynamically filter out headers, footers, ToC, and irrelevant sections.
+    Extract structured text from a PDF, adding hierarchical numbering for headings (H1, H2, H3).
+    Dynamically filter out headers, footers, ToC, and irrelevant sections.
     """
+    import unicodedata
+
     sections = []
-    current_section = None
+    section_counter = 0
+    subsection_counter = 0
+    subsubsection_counter = 0
     current_text = []
+    current_section = None
+
+    def normalize_text(line):
+        """Normalize text to remove weird characters and whitespace."""
+        return unicodedata.normalize("NFKC", line.strip())
 
     def is_toc_line(line):
         """Determine if a line is part of the Table of Contents."""
-        # Match patterns like: "1. Introduction .......... 1" or "1.1 Background ..... 3"
         return re.match(r'^\s*\d+(\.\d+)*\s+.+\.{3,}\s*\d+\s*$', line)
 
-    def is_metadata_or_irrelevant(section):
-        """Filter out metadata-like or irrelevant sections."""
-        content = section["content"].strip()
-        if len(content) < 20:  # Exclude very short content
-            return True
-        if re.match(r'^([\.\s\d]+)$', content):  # Contains only dots or numbers
-            return True
-        if re.search(r'\.{3,}', content):  # Contains dotted leaders
-            return True
-        return False
+    def is_metadata_line(line):
+        """Filter out lines that are likely metadata."""
+        metadata_patterns = [
+            r"^Copyright\s", r"^ISBN", r"^Omslag", r"^Dtp", r"^Tryk", r"^\d+\s*$", r"^\s*$"
+        ]
+        return any(re.match(pattern, line) for pattern in metadata_patterns)
+
+    def is_heading(line):
+        """Determine if a line is a heading."""
+        return (
+            re.match(r"^\d+\.\s", line) or  # H1 (e.g., "1. Title")
+            re.match(r"^\d+\.\d+\s", line) or  # H2 (e.g., "1.1 Subtitle")
+            re.match(r"^\d+\.\d+\.\d+\s", line)  # H3 (e.g., "1.1.1 Sub-subtitle")
+        )
 
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
@@ -173,66 +259,98 @@ def extract_text_filtered_pdf(pdf_file, header_height, footer_height):
                 continue
 
             for line in filtered_text.split("\n"):
-                line = line.strip()
-                if not line or is_toc_line(line):  # Skip empty lines and ToC lines
-                    continue
+                line = normalize_text(line)
+                if not line or is_toc_line(line) or is_metadata_line(line):
+                    continue  # Skip empty lines, ToC lines, and metadata
 
-                # Detect headings and group content under them
-                if re.match(r"^\d+\.\s.+", line):  # H1 example (e.g., "1. Title")
-                    if current_section and current_text:  # Save non-empty sections
+                if is_heading(line):  # Check if the line is a heading
+                    if current_section and current_text:
                         sections.append({"title": current_section, "content": " ".join(current_text)})
                         current_text = []
-                    current_section = line
-                elif re.match(r"^\d+\.\d+\s.+", line):  # H2 example (e.g., "1.1 Subtitle")
-                    if current_section and current_text:  # Save non-empty sections
-                        sections.append({"title": current_section, "content": " ".join(current_text)})
-                        current_text = []
-                    current_section = line
-                elif re.match(r"^\d+\.\d+\.\d+\s.+", line):  # H3 example (e.g., "1.1.1 Sub-subtitle")
-                    if current_section and current_text:  # Save non-empty sections
-                        sections.append({"title": current_section, "content": " ".join(current_text)})
-                        current_text = []
-                    current_section = line
+
+                    # Assign hierarchical numbering
+                    if re.match(r"^\d+\.\s", line):  # H1
+                        section_counter += 1
+                        subsection_counter = 0
+                        subsubsection_counter = 0
+                        current_section = f"Section {section_counter}: {line}"
+                    elif re.match(r"^\d+\.\d+\s", line):  # H2
+                        subsection_counter += 1
+                        subsubsection_counter = 0
+                        current_section = f"Subsection {section_counter}.{subsection_counter}: {line}"
+                    elif re.match(r"^\d+\.\d+\.\d+\s", line):  # H3
+                        subsubsection_counter += 1
+                        current_section = f"Subsubsection {section_counter}.{subsection_counter}.{subsubsection_counter}: {line}"
                 else:
-                    # Append regular content under the current section
-                    current_text.append(line)
+                    # Append unprocessed lines to the current section's content
+                    if current_section:
+                        current_text.append(line)
+                    else:
+                        print(f"Unprocessed line (no section): {line}")
 
     # Save the last section
     if current_section and current_text:
         sections.append({"title": current_section, "content": " ".join(current_text)})
 
-    # Filter out irrelevant sections and empty content
-    return [section for section in sections if section["content"].strip() and not is_metadata_or_irrelevant(section)]
+    # Filter out irrelevant sections
+    return [section for section in sections if section["content"].strip()]
 
 
 def extract_text_filtered_epub(epub_file):
+    """
+    Extract structured text from an EPUB file with hierarchical numbering
+    (e.g., Section 1, Subsection 1.1, Subsubsection 1.1.1).
+    """
     book = epub.read_epub(epub_file)
     sections = []
+    section_counter = 0
+    subsection_counter = 0
+    subsubsection_counter = 0
+
     for item in book.get_items():
         if item.get_type() == ebooklib.ITEM_DOCUMENT:
             soup = BeautifulSoup(item.content, 'html.parser')
             body = soup.find('body')
             if not body:
                 continue
+
             for tag in body.find_all(['h1', 'h2', 'h3']):
                 section_title = tag.get_text().strip()
+
+                # Determine heading level and assign numbering
+                if tag.name == 'h1':
+                    section_counter += 1
+                    subsection_counter = 0
+                    subsubsection_counter = 0
+                    numbered_title = f"Section {section_counter}: {section_title}"
+                elif tag.name == 'h2':
+                    subsection_counter += 1
+                    subsubsection_counter = 0
+                    numbered_title = f"Subsection {section_counter}.{subsection_counter}: {section_title}"
+                elif tag.name == 'h3':
+                    subsubsection_counter += 1
+                    numbered_title = f"Subsubsection {section_counter}.{subsection_counter}.{subsubsection_counter}: {section_title}"
+                else:
+                    print(f"Skipping unsupported tag: {tag.name}")
+
+                # Extract content for the current section
                 section_content = []
                 for sibling in tag.find_next_siblings():
                     if sibling.name in ['h1', 'h2', 'h3']:
-                        break
+                        break  # Stop at the next heading
                     text = sibling.get_text().strip()
                     if text.isdigit() or "Chapter" in text or len(text) < 3:
                         continue
                     section_content.append(text)
+
+                # Append section with its hierarchical numbering
                 if section_content:
-                    sections.append({"title": section_title, "content": "\n".join(section_content)})
+                    sections.append({"title": numbered_title, "content": "\n".join(section_content)})
+
     return sections
 
 
-import shutil
-
-
-def text_to_audio_with_heading(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):
+def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
     chunks = split_text_into_chunks(heading + "\n" + text)
 
@@ -400,7 +518,7 @@ with gr.Blocks() as demo:
                 audio_output = gr.Audio(label="Generated Audio")
 
         generate_audio_button.click(
-            text_to_audio_with_heading,
+            text_to_audio,
             inputs=[section_preview, section_titles, lang, speaker_type, speaker_name_studio, speaker_name_custom,
                     output_format],
             outputs=[audio_output]
