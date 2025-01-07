@@ -45,6 +45,9 @@ def process_file(file, header_height=1, footer_height=1):
     """
     Processes the uploaded file and returns dropdown options, sections state, and initial section content.
     """
+    if file is None:
+        return gr.update(choices=[], value=None), [], "No file uploaded."
+
     if file.name.endswith('.pdf'):
         sections = extract_text_filtered_pdf(file.name, header_height, footer_height)
         section_titles = [section["title"] for section in sections]
@@ -74,7 +77,8 @@ def process_file(file, header_height=1, footer_height=1):
         return dropdown_output, [{"title": "Text File Content", "content": text}], initial_preview
 
     else:
-        return gr.update(choices=[], value=None), [], "No content available."
+        return gr.update(choices=[], value=None), [], "Unsupported file format."
+
 
 
 
@@ -82,6 +86,14 @@ def update_pdf_controls(file):
     """
     Dynamically updates the visibility of PDF-specific controls.
     """
+    if file is None:
+        return (
+            gr.update(visible=False),  # preview_page_selector
+            gr.update(visible=False),  # header_preview_slider
+            gr.update(visible=False),  # footer_preview_slider
+            gr.update(visible=False)   # preview_image
+        )
+
     if file.name.endswith('.pdf'):
         return (
             gr.update(visible=True),  # preview_page_selector
@@ -324,11 +336,6 @@ def display_section(selected_title, sections):
     return "Section not found."
 
 
-def get_section_title(selected_title):
-    return selected_title
-
-
-
 # Gradio Interface
 with gr.Blocks() as demo:
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
@@ -356,20 +363,20 @@ with gr.Blocks() as demo:
     # PDF-specific controls (initially hidden)
     with gr.Row() as pdf_controls:
         preview_page_selector = gr.Number(visible=False, label="Page Number", value=1, precision=0)
-        header_preview_slider = gr.Slider(visible=False, label="Header Height", minimum=0, maximum=200, value=1, step=1)
-        footer_preview_slider = gr.Slider(visible=False, label="Footer Height", minimum=0, maximum=200, value=1, step=1)
+        header_preview_slider = gr.Slider(visible=False, label="Header Height", minimum=0, maximum=200, value=0, step=1)
+        footer_preview_slider = gr.Slider(visible=False, label="Footer Height", minimum=0, maximum=200, value=0, step=1)
         preview_image = gr.Image(visible=False, label="Preview with Header/Footer")
 
     # Text/Section Processing Tab
     with gr.Tab("Process Text/EPUB/PDF/docx"):
-        process_button = gr.Button("Process File")
-        section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
-        section_preview = gr.Textbox(label="Preview Section Content", lines=10)
-
-    # Generate Audio Tab
-    with gr.Tab("Generate Audio"):
-        generate_audio_button = gr.Button("Generate Audio")
-        audio_output = gr.Audio(label="Generated Audio")
+        with gr.Row():
+            with gr.Column() as process_col:
+                process_button = gr.Button("Process File")
+                section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
+                section_preview = gr.Textbox(label="Preview Section Content", lines=10)
+            with gr.Column() as audio_col:
+                generate_audio_button = gr.Button("Generate Audio")
+                audio_output = gr.Audio(label="Generated Audio")
 
         generate_audio_button.click(
             text_to_audio_with_heading,
