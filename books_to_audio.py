@@ -40,24 +40,35 @@ except:
     raise Exception("Please make sure the server is running first.")
 
 
-def process_file(file):
+def process_file(file, header_height=1, footer_height=1):
     """
-    Processes the uploaded file, extracts sections, and returns dropdown options and sections state.
+    Processes the uploaded file and returns dropdown options, sections state, and initial section content.
     """
-    if file.name.endswith('.epub'):
+    if file.name.endswith('.pdf'):
+        sections = extract_text_filtered_pdf(file.name, header_height, footer_height)
+        section_titles = [section["title"] for section in sections]
+        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
+        initial_preview = sections[0]["content"] if sections else "No content available."
+        return dropdown_output, sections, initial_preview
+
+    elif file.name.endswith('.epub'):
         sections = extract_text_filtered_epub(file.name)
         section_titles = [section["title"] for section in sections]
-        return gr.update(choices=section_titles, value=section_titles[0] if section_titles else None), sections
+        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
+        initial_preview = sections[0]["content"] if sections else "No content available."
+        return dropdown_output, sections, initial_preview
+
     elif file.name.endswith('.txt'):
         with open(file.name, 'r', encoding='utf-8') as f:
             text = f.read()
-        return gr.update(choices=["Text File Content"], value="Text File Content"), [{"title": "Text File Content", "content": text}]
-    elif file.name.endswith('.pdf'):
-        sections = extract_text_filtered_pdf(file.name)
-        section_titles = [section["title"] for section in sections]
-        return gr.update(choices=section_titles, value=section_titles[0] if section_titles else None), sections
+        dropdown_output = gr.update(choices=["Text File Content"], value="Text File Content")
+        initial_preview = text
+        return dropdown_output, [{"title": "Text File Content", "content": text}], initial_preview
+
     else:
-        return gr.update(choices=[], value=None), []
+        return gr.update(choices=[], value=None), [], "No content available."
+
+
 
 def update_pdf_controls(file):
     """
@@ -68,24 +79,21 @@ def update_pdf_controls(file):
             gr.update(visible=True),  # preview_page_selector
             gr.update(visible=True),  # header_preview_slider
             gr.update(visible=True),  # footer_preview_slider
-            gr.update(visible=True),  # preview_button
-            gr.update(visible=True),  # preview_image
+            gr.update(visible=True)   # preview_image
         )
     else:
         return (
             gr.update(visible=False),  # preview_page_selector
             gr.update(visible=False),  # header_preview_slider
             gr.update(visible=False),  # footer_preview_slider
-            gr.update(visible=False),  # preview_button
-            gr.update(visible=False),  # preview_image
+            gr.update(visible=False)   # preview_image
         )
 
 
-
-def extract_text_filtered_pdf(pdf_file, header_height=0, footer_height=0):
+def extract_text_filtered_pdf(pdf_file, header_height, footer_height):
     """
-    Extract structured text from PDF, organized by headings (H1, H2, H3),
-    and filter out Table of Contents (ToC) and irrelevant or empty sections.
+    Extract structured text from a PDF, organized by headings (H1, H2, H3),
+    and dynamically filter out headers, footers, ToC, and irrelevant sections.
     """
     sections = []
     current_section = None
@@ -98,7 +106,6 @@ def extract_text_filtered_pdf(pdf_file, header_height=0, footer_height=0):
 
     def is_metadata_or_irrelevant(section):
         """Filter out metadata-like or irrelevant sections."""
-        # Exclude sections that are mostly numbers, dots, or short
         content = section["content"].strip()
         if len(content) < 20:  # Exclude very short content
             return True
@@ -110,44 +117,45 @@ def extract_text_filtered_pdf(pdf_file, header_height=0, footer_height=0):
 
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
-            text = page.filter(
+            # Filter content to exclude headers and footers
+            filtered_text = page.filter(
                 lambda obj: header_height < obj["top"] < page.height - footer_height
             ).extract_text()
-            if not text:
+
+            if not filtered_text:
                 continue
 
-            for line in text.split("\n"):
+            for line in filtered_text.split("\n"):
                 line = line.strip()
                 if not line or is_toc_line(line):  # Skip empty lines and ToC lines
                     continue
 
-                # Detect headings (H1, H2, H3)
-                if re.match(r"^\d+\.\s.+", line):  # H1 example
+                # Detect headings and group content under them
+                if re.match(r"^\d+\.\s.+", line):  # H1 example (e.g., "1. Title")
                     if current_section and current_text:  # Save non-empty sections
                         sections.append({"title": current_section, "content": " ".join(current_text)})
                         current_text = []
                     current_section = line
-                elif re.match(r"^\d+\.\d+\s.+", line):  # H2 example
+                elif re.match(r"^\d+\.\d+\s.+", line):  # H2 example (e.g., "1.1 Subtitle")
                     if current_section and current_text:  # Save non-empty sections
                         sections.append({"title": current_section, "content": " ".join(current_text)})
                         current_text = []
                     current_section = line
-                elif re.match(r"^\d+\.\d+\.\d+\s.+", line):  # H3 example
+                elif re.match(r"^\d+\.\d+\.\d+\s.+", line):  # H3 example (e.g., "1.1.1 Sub-subtitle")
                     if current_section and current_text:  # Save non-empty sections
                         sections.append({"title": current_section, "content": " ".join(current_text)})
                         current_text = []
                     current_section = line
                 else:
-                    # Add remaining lines to the current section text
+                    # Append regular content under the current section
                     current_text.append(line)
 
-    # Append the last section if it contains text
+    # Save the last section
     if current_section and current_text:
         sections.append({"title": current_section, "content": " ".join(current_text)})
 
-    # Filter out empty and irrelevant sections
+    # Filter out irrelevant sections and empty content
     return [section for section in sections if section["content"].strip() and not is_metadata_or_irrelevant(section)]
-
 
 
 def extract_text_filtered_epub(epub_file):
@@ -313,8 +321,8 @@ with gr.Blocks() as demo:
     # PDF-specific controls (initially hidden)
     with gr.Row() as pdf_controls:
         preview_page_selector = gr.Number(visible=False, label="Page Number", value=1, precision=0)
-        header_preview_slider = gr.Slider(visible=False, label="Header Height", minimum=0, maximum=200, value=0, step=1)
-        footer_preview_slider = gr.Slider(visible=False, label="Footer Height", minimum=0, maximum=200, value=0, step=1)
+        header_preview_slider = gr.Slider(visible=False, label="Header Height", minimum=0, maximum=200, value=1, step=1)
+        footer_preview_slider = gr.Slider(visible=False, label="Footer Height", minimum=0, maximum=200, value=1, step=1)
         preview_image = gr.Image(visible=False, label="Preview with Header/Footer")
 
     # Text/Section Processing Tab
@@ -338,7 +346,7 @@ with gr.Blocks() as demo:
     file_input.change(
         process_file,
         inputs=[file_input],
-        outputs=[section_titles, sections_state]
+        outputs=[section_titles, sections_state, section_preview]
     )
 
     # Dynamically Update PDF Controls Visibility
@@ -378,11 +386,10 @@ with gr.Blocks() as demo:
         outputs=[section_preview]
     )
 
-    # Process Button Click Action
     process_button.click(
         process_file,
-        inputs=[file_input],
-        outputs=[section_titles, sections_state]
+        inputs=[file_input, header_preview_slider, footer_preview_slider],
+        outputs=[section_titles, sections_state, section_preview]  # Include `section_preview`
     )
 
     demo.launch(
