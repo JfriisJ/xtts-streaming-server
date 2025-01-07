@@ -1,11 +1,8 @@
 import binascii
 import os
-import tempfile
 import base64
 import json
-
 import shutil
-import pdfplumber
 from docx import Document
 import re
 import ebooklib
@@ -14,6 +11,12 @@ from ebooklib import epub
 from bs4 import BeautifulSoup
 import gradio as gr
 from pydub import AudioSegment
+
+from docx.shared import Inches
+import PyPDF2
+import fitz  # PyMuPDF
+import io
+from PIL import Image
 
 SERVER_URL = 'http://localhost:8000'
 OUTPUT = "./demo_outputs"
@@ -41,36 +44,46 @@ try:
 except:
     raise Exception("Please make sure the server is running first.")
 
+#-------------------------------------------------------------------------------------------
 
-def process_file(file, header_height=1, footer_height=1):
+def flatten_sections(sections):
+    """
+    Flattens the hierarchical sections into a single list for dropdown choices.
+    """
+    flat_list = []
+    for section in sections:
+        flat_list.append({"title": section["title"], "content": section["content"]})
+        for subsection in section.get("subsections", []):
+            flat_list.append({"title": subsection["title"], "content": subsection["content"]})
+            for subsubsection in subsection.get("subsubsections", []):
+                flat_list.append({"title": subsubsection["title"], "content": subsubsection["content"]})
+    return flat_list
+
+def process_file(file):
     """
     Processes the uploaded file and returns dropdown options, sections state, and initial section content.
     """
     if file is None:
         return gr.update(choices=[], value=None), [], "No file uploaded."
 
-    def flatten_sections(sections):
-        """
-        Flattens the hierarchical sections into a single list for dropdown choices.
-        """
-        flat_list = []
-        for section in sections:
-            flat_list.append({"title": section["title"], "content": section["content"]})
-            for subsection in section.get("subsections", []):
-                flat_list.append({"title": subsection["title"], "content": subsection["content"]})
-                for subsubsection in subsection.get("subsubsections", []):
-                    flat_list.append({"title": subsubsection["title"], "content": subsubsection["content"]})
-        return flat_list
+    print(f"Processing file: {file.name}")
 
     # Process based on file type
-    if file.name.endswith('.pdf'):
-        sections = extract_text_filtered_pdf(file.name, header_height, footer_height)
-    elif file.name.endswith('.epub'):
+    if file.name.endswith('.epub'):
         sections = extract_text_filtered_epub(file.name)
     elif file.name.endswith('.docx'):
         sections = extract_text_filtered_docx(file.name)
     elif file.name.endswith('.txt'):
         sections = extract_text_filtered_txt(file.name)
+    elif file.name.endswith('.pdf'):
+        try:
+            text_from_pdf = extract_text_with_pymupdf(file.name)
+            if "No meaningful content" in text_from_pdf[0]:
+                return gr.update(choices=[], value=None), [], text_from_pdf[0]
+            sections = extract_text_filtered_txt(text_from_pdf)
+        except Exception as e:
+            print(f"Error reading PDF file: {e}")
+            return gr.update(choices=[], value=None), [], f"Error reading PDF file: {e}"
     else:
         return gr.update(choices=[], value=None), [], "Unsupported file format."
 
@@ -80,44 +93,84 @@ def process_file(file, header_height=1, footer_height=1):
     dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
     initial_preview = flat_sections[0]["content"] if flat_sections else "No content available."
 
+    print(f"Dropdown choices: {section_titles}")
+    print(f"Initial preview: {initial_preview[:100]}...")
+
     return dropdown_output, flat_sections, initial_preview
 
-
-def extract_text_filtered_txt(file_path):
+#------------------------------------------------------------------------------------------------------------
+#PDF to text
+import fitz  # PyMuPDF
+def extract_text_with_pymupdf(file):
     """
-    Process a plain text file and structure it into sections, subsections, and subsubsections.
+    Extract text from a PDF using PyMuPDF, skipping empty or irrelevant pages.
+    """
+    text_content = []
+    with fitz.open(file) as pdf_document:
+        for page_num in range(len(pdf_document)):
+            page = pdf_document.load_page(page_num)
+            text = page.get_text().strip()
+            if text and "No text found" not in text:
+                text_content.append(f"Page {page_num + 1}:\n{text}\n")
+    return text_content if text_content else ["No meaningful content extracted from the PDF."]
+
+
+#------------------------------------------------------------------------------------------------------------
+
+import re
+
+def deduplicate_sections(sections):
+    """
+    Remove duplicate or redundant section titles.
+    """
+    seen = set()
+    unique_sections = []
+    for section in sections:
+        if section["title"] not in seen:
+            seen.add(section["title"])
+            unique_sections.append(section)
+    return unique_sections
+
+
+def extract_text_filtered_txt(input_data):
+    """
+    Process text and structure it into deduplicated sections, subsections, and subsubsections.
     """
     sections = []
     section = None
     subsection = None
     subsubsection = None
 
-    with open(file_path, "r", encoding="utf-8") as file:
-        lines = file.readlines()
+    if isinstance(input_data, list):
+        lines = [line for page in input_data for line in page.split('\n')]
+    elif isinstance(input_data, str):
+        with open(input_data, "r", encoding="utf-8") as file:
+            lines = file.readlines()
+    else:
+        raise TypeError("Expected str (file path) or list (text content)")
+
+    print(f"Total lines to process: {len(lines)}")
 
     for line in lines:
         line = line.strip()
-        if not line:
-            continue  # Skip empty lines
+        if not line or re.match(r"^\d+$", line):  # Skip empty or irrelevant numeric lines
+            continue
 
-        # Detect sections (e.g., "3. ")
-        if re.match(r"^\d+\.\s", line):
+        # Detect sections (e.g., "CHAPTER 1", "Section 2")
+        if re.match(r"^(CHAPTER|Chapter|SECTION|Section)\s*\d+", line, re.IGNORECASE):
             if section:
                 sections.append(section)
-            section = {"title": line, "content": "", "subsections": []}
+            section = {"title": line.title(), "content": "", "subsections": []}
             subsection = None
             subsubsection = None
-        # Detect subsections (e.g., "3.1. ")
+            print(f"New section detected: {line}")
+        # Detect subsections (e.g., "3.1.")
         elif re.match(r"^\d+\.\d+\.\s", line):
             if subsection:
                 section["subsections"].append(subsection)
             subsection = {"title": line, "content": "", "subsubsections": []}
             subsubsection = None
-        # Detect subsubsections (e.g., "3.1.1. ")
-        elif re.match(r"^\d+\.\d+\.\d+\.\s", line):
-            if subsubsection:
-                subsection["subsubsections"].append(subsubsection)
-            subsubsection = {"title": line, "content": ""}
+            print(f"New subsection detected: {line}")
         else:
             # Add content to the current level
             if subsubsection:
@@ -126,6 +179,7 @@ def extract_text_filtered_txt(file_path):
                 subsection["content"] += line + " "
             elif section:
                 section["content"] += line + " "
+            print(f"Adding content to current level: {line}")
 
     # Append the last section, subsection, or subsubsection
     if subsubsection:
@@ -135,36 +189,12 @@ def extract_text_filtered_txt(file_path):
     if section:
         sections.append(section)
 
+    # Deduplicate sections
+    sections = deduplicate_sections(sections)
+
+    print(f"Total unique sections processed: {len(sections)}")
     return sections
 
-
-
-def update_pdf_controls(file):
-    """
-    Dynamically updates the visibility of PDF-specific controls.
-    """
-    if file is None:
-        return (
-            gr.update(visible=False),  # preview_page_selector
-            gr.update(visible=False),  # header_preview_slider
-            gr.update(visible=False),  # footer_preview_slider
-            gr.update(visible=False)   # preview_image
-        )
-
-    if file.name.endswith('.pdf'):
-        return (
-            gr.update(visible=True),  # preview_page_selector
-            gr.update(visible=True),  # header_preview_slider
-            gr.update(visible=True),  # footer_preview_slider
-            gr.update(visible=True)   # preview_image
-        )
-    else:
-        return (
-            gr.update(visible=False),  # preview_page_selector
-            gr.update(visible=False),  # header_preview_slider
-            gr.update(visible=False),  # footer_preview_slider
-            gr.update(visible=False)   # preview_image
-        )
 
 
 def extract_text_filtered_docx(docx_file):
@@ -208,91 +238,6 @@ def extract_text_filtered_docx(docx_file):
                 sections[-1]["content"] += paragraph.text.strip() + "\n"
 
     # Filter out empty sections
-    return [section for section in sections if section["content"].strip()]
-
-
-def extract_text_filtered_pdf(pdf_file, header_height, footer_height):
-    """
-    Extract structured text from a PDF, adding hierarchical numbering for headings (H1, H2, H3).
-    Dynamically filter out headers, footers, ToC, and irrelevant sections.
-    """
-    import unicodedata
-
-    sections = []
-    section_counter = 0
-    subsection_counter = 0
-    subsubsection_counter = 0
-    current_text = []
-    current_section = None
-
-    def normalize_text(line):
-        """Normalize text to remove weird characters and whitespace."""
-        return unicodedata.normalize("NFKC", line.strip())
-
-    def is_toc_line(line):
-        """Determine if a line is part of the Table of Contents."""
-        return re.match(r'^\s*\d+(\.\d+)*\s+.+\.{3,}\s*\d+\s*$', line)
-
-    def is_metadata_line(line):
-        """Filter out lines that are likely metadata."""
-        metadata_patterns = [
-            r"^Copyright\s", r"^ISBN", r"^Omslag", r"^Dtp", r"^Tryk", r"^\d+\s*$", r"^\s*$"
-        ]
-        return any(re.match(pattern, line) for pattern in metadata_patterns)
-
-    def is_heading(line):
-        """Determine if a line is a heading."""
-        return (
-            re.match(r"^\d+\.\s", line) or  # H1 (e.g., "1. Title")
-            re.match(r"^\d+\.\d+\s", line) or  # H2 (e.g., "1.1 Subtitle")
-            re.match(r"^\d+\.\d+\.\d+\s", line)  # H3 (e.g., "1.1.1 Sub-subtitle")
-        )
-
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            # Filter content to exclude headers and footers
-            filtered_text = page.filter(
-                lambda obj: header_height < obj["top"] < page.height - footer_height
-            ).extract_text()
-
-            if not filtered_text:
-                continue
-
-            for line in filtered_text.split("\n"):
-                line = normalize_text(line)
-                if not line or is_toc_line(line) or is_metadata_line(line):
-                    continue  # Skip empty lines, ToC lines, and metadata
-
-                if is_heading(line):  # Check if the line is a heading
-                    if current_section and current_text:
-                        sections.append({"title": current_section, "content": " ".join(current_text)})
-                        current_text = []
-
-                    # Assign hierarchical numbering
-                    if re.match(r"^\d+\.\s", line):  # H1
-                        section_counter += 1
-                        subsection_counter = 0
-                        subsubsection_counter = 0
-                        current_section = f"Section {section_counter}: {line}"
-                    elif re.match(r"^\d+\.\d+\s", line):  # H2
-                        subsection_counter += 1
-                        subsubsection_counter = 0
-                        current_section = f"Subsection {section_counter}.{subsection_counter}: {line}"
-                    elif re.match(r"^\d+\.\d+\.\d+\s", line):  # H3
-                        subsubsection_counter += 1
-                        current_section = f"Subsubsection {section_counter}.{subsection_counter}.{subsubsection_counter}: {line}"
-                else:
-                    # Append unprocessed lines to the current section's content
-                    if current_section:
-                        current_text.append(line)
-                    else:
-                        print(f"Unprocessed line (no section): {line}")
-
-    # Save the last section
-    if current_section and current_text:
-        sections.append({"title": current_section, "content": " ".join(current_text)})
-
-    # Filter out irrelevant sections
     return [section for section in sections if section["content"].strip()]
 
 
@@ -399,25 +344,6 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
         return None
 
 
-
-def preview_pdf_with_header_footer(pdf_file, header_height, footer_height, page_number):
-    import pdfplumber
-
-    with pdfplumber.open(pdf_file.name) as pdf:
-        if page_number < 1 or page_number > len(pdf.pages):
-            return "Invalid page number selected."
-        page = pdf.pages[page_number - 1]
-        img = page.to_image()
-
-        # Draw header and footer areas
-        img.draw_rects([{"x0": 0, "top": 0, "x1": page.width, "bottom": header_height}], stroke="red", fill=(255, 0, 0, 77))
-        img.draw_rects([{"x0": 0, "top": page.height - footer_height, "x1": page.width, "bottom": page.height}], stroke="blue", fill=(0, 0, 255, 77))
-
-        temp_image_path = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
-        img.save(temp_image_path)
-        return temp_image_path
-
-
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
 
     sentences = re.split(r'(?<=\.) ', text)
@@ -497,15 +423,8 @@ with gr.Blocks() as demo:
         )
 
 
-    # PDF-specific controls (initially hidden)
-    with gr.Row() as pdf_controls:
-        preview_page_selector = gr.Number(visible=False, label="Page Number", value=1, precision=0)
-        header_preview_slider = gr.Slider(visible=False, label="Header Height", minimum=0, maximum=200, value=0, step=1)
-        footer_preview_slider = gr.Slider(visible=False, label="Footer Height", minimum=0, maximum=200, value=0, step=1)
-        preview_image = gr.Image(visible=False, label="Preview with Header/Footer")
-
     # Text/Section Processing Tab
-    with gr.Tab("Process Text/EPUB/PDF/docx"):
+    with gr.Tab("Process Text/EPUB/docx"):
         with gr.Row():
             with gr.Column() as process_col:
                 process_button = gr.Button("Process File")
@@ -531,36 +450,7 @@ with gr.Blocks() as demo:
         outputs=[section_titles, sections_state, section_preview]
     )
 
-    # Dynamically Update PDF Controls Visibility
-    file_input.change(
-        update_pdf_controls,
-        inputs=[file_input],
-        outputs=[
-            preview_page_selector,
-            header_preview_slider,
-            footer_preview_slider,
-            preview_image
-        ]
-    )
 
-    # Dynamically Update Preview on Slider or Page Changes
-    preview_page_selector.change(
-        preview_pdf_with_header_footer,
-        inputs=[file_input, header_preview_slider, footer_preview_slider, preview_page_selector],
-        outputs=[preview_image]
-    )
-
-    header_preview_slider.change(
-        preview_pdf_with_header_footer,
-        inputs=[file_input, header_preview_slider, footer_preview_slider, preview_page_selector],
-        outputs=[preview_image]
-    )
-
-    footer_preview_slider.change(
-        preview_pdf_with_header_footer,
-        inputs=[file_input, header_preview_slider, footer_preview_slider, preview_page_selector],
-        outputs=[preview_image]
-    )
 
     section_titles.change(
         display_section,
@@ -570,7 +460,7 @@ with gr.Blocks() as demo:
 
     process_button.click(
         process_file,
-        inputs=[file_input, header_preview_slider, footer_preview_slider],
+        inputs=[file_input],
         outputs=[section_titles, sections_state, section_preview]  # Include `section_preview`
     )
 
