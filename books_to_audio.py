@@ -229,10 +229,21 @@ def extract_text_filtered_epub(epub_file):
     return sections
 
 
-def text_to_audio_with_heading(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None):
-    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
-    chunks = split_text_into_chunks(heading + "\n" + text)
-    generated_audio_paths = []
+import shutil
+
+
+def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None,
+                               speaker_name_custom=None):
+    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[
+        speaker_name_custom]
+    chunks = split_text_into_chunks(heading + ".\n" + text)
+
+    # Create a temporary directory for caching
+    cache_dir = os.path.join("demo_outputs", "cache")
+    if not os.path.exists(cache_dir):
+        os.mkdir(cache_dir)
+
+    cached_audio_paths = []
     for idx, chunk in enumerate(chunks):
         response = requests.post(
             SERVER_URL + "/tts",
@@ -246,25 +257,28 @@ def text_to_audio_with_heading(text, heading, lang="en", speaker_type="Studio", 
         if response.status_code != 200:
             print(f"Error: Server returned status {response.status_code} for chunk: {chunk}")
             continue
-        generated_audio = response.content
+
         try:
-            decoded_audio = base64.b64decode(generated_audio)
+            decoded_audio = base64.b64decode(response.content)
         except binascii.Error as e:
             print(f"Error decoding audio for chunk: {e}")
             continue
-        audio_path = os.path.join("demo_outputs", "generated_audios", f"{heading}_{idx + 1}.wav")
+
+        audio_path = os.path.join(cache_dir, f"{heading}_{idx + 1}.wav")
         with open(audio_path, "wb") as fp:
             fp.write(decoded_audio)
-            generated_audio_paths.append(audio_path)
+            cached_audio_paths.append(audio_path)
 
-    # If multiple audio paths, concatenate them into a single file
-    if len(generated_audio_paths) > 1:
-        combined_audio_path = concatenate_audios(generated_audio_paths)
+    # Combine cached audio files
+    if len(cached_audio_paths) > 0:
+        combined_audio_path = concatenate_audios(cached_audio_paths)
         final_path = os.path.join("demo_outputs", "generated_audios", f"{heading}.wav")
         os.rename(combined_audio_path, final_path)
-        return final_path  # Return single combined file path
-    elif generated_audio_paths:
-        return generated_audio_paths[0]  # Return single file path
+
+        # Clear cache after successful combination
+        shutil.rmtree(cache_dir)
+
+        return final_path
     else:
         return None  # Return None if no audio was generated
 
@@ -379,7 +393,7 @@ with gr.Blocks() as demo:
                 audio_output = gr.Audio(label="Generated Audio")
 
         generate_audio_button.click(
-            text_to_audio_with_heading,
+            text_to_audio,
             inputs=[section_preview, section_titles, lang, speaker_type, speaker_name_studio, speaker_name_custom],
             outputs=[audio_output]
         )
