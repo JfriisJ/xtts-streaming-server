@@ -40,9 +40,10 @@ except:
     raise Exception("Please make sure the server is running first.")
 
 
-# Helper Functions
-
 def process_file(file):
+    """
+    Processes the uploaded file, extracts sections, and returns dropdown options and sections state.
+    """
     if file.name.endswith('.epub'):
         sections = extract_text_filtered_epub(file.name)
         section_titles = [section["title"] for section in sections]
@@ -58,15 +59,54 @@ def process_file(file):
     else:
         return gr.update(choices=[], value=None), []
 
-
-# Add PDF-specific text extraction
-def extract_text_filtered_pdf(pdf_file, header_height=50, footer_height=60):
+def update_pdf_controls(file):
     """
-    Extract structured text from PDF, organized by headings (H1, H2, H3).
+    Dynamically updates the visibility of PDF-specific controls.
+    """
+    if file.name.endswith('.pdf'):
+        return (
+            gr.update(visible=True),  # preview_page_selector
+            gr.update(visible=True),  # header_preview_slider
+            gr.update(visible=True),  # footer_preview_slider
+            gr.update(visible=True),  # preview_button
+            gr.update(visible=True),  # preview_image
+        )
+    else:
+        return (
+            gr.update(visible=False),  # preview_page_selector
+            gr.update(visible=False),  # header_preview_slider
+            gr.update(visible=False),  # footer_preview_slider
+            gr.update(visible=False),  # preview_button
+            gr.update(visible=False),  # preview_image
+        )
+
+
+
+def extract_text_filtered_pdf(pdf_file, header_height=0, footer_height=0):
+    """
+    Extract structured text from PDF, organized by headings (H1, H2, H3),
+    and filter out Table of Contents (ToC) and irrelevant or empty sections.
     """
     sections = []
     current_section = None
     current_text = []
+
+    def is_toc_line(line):
+        """Determine if a line is part of the Table of Contents."""
+        # Match patterns like: "1. Introduction .......... 1" or "1.1 Background ..... 3"
+        return re.match(r'^\s*\d+(\.\d+)*\s+.+\.{3,}\s*\d+\s*$', line)
+
+    def is_metadata_or_irrelevant(section):
+        """Filter out metadata-like or irrelevant sections."""
+        # Exclude sections that are mostly numbers, dots, or short
+        content = section["content"].strip()
+        if len(content) < 20:  # Exclude very short content
+            return True
+        if re.match(r'^([\.\s\d]+)$', content):  # Contains only dots or numbers
+            return True
+        if re.search(r'\.{3,}', content):  # Contains dotted leaders
+            return True
+        return False
 
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
@@ -78,32 +118,37 @@ def extract_text_filtered_pdf(pdf_file, header_height=50, footer_height=60):
 
             for line in text.split("\n"):
                 line = line.strip()
-                if not line:
+                if not line or is_toc_line(line):  # Skip empty lines and ToC lines
                     continue
+
                 # Detect headings (H1, H2, H3)
                 if re.match(r"^\d+\.\s.+", line):  # H1 example
-                    if current_section:
+                    if current_section and current_text:  # Save non-empty sections
                         sections.append({"title": current_section, "content": " ".join(current_text)})
                         current_text = []
                     current_section = line
                 elif re.match(r"^\d+\.\d+\s.+", line):  # H2 example
-                    if current_section:
+                    if current_section and current_text:  # Save non-empty sections
                         sections.append({"title": current_section, "content": " ".join(current_text)})
                         current_text = []
                     current_section = line
                 elif re.match(r"^\d+\.\d+\.\d+\s.+", line):  # H3 example
-                    if current_section:
+                    if current_section and current_text:  # Save non-empty sections
                         sections.append({"title": current_section, "content": " ".join(current_text)})
                         current_text = []
                     current_section = line
                 else:
+                    # Add remaining lines to the current section text
                     current_text.append(line)
 
-    # Append the last section
+    # Append the last section if it contains text
     if current_section and current_text:
         sections.append({"title": current_section, "content": " ".join(current_text)})
 
-    return sections
+    # Filter out empty and irrelevant sections
+    return [section for section in sections if section["content"].strip() and not is_metadata_or_irrelevant(section)]
+
+
 
 def extract_text_filtered_epub(epub_file):
     book = epub.read_epub(epub_file)
@@ -169,6 +214,24 @@ def text_to_audio_with_heading(text, heading, lang="en", speaker_type="Studio", 
         return None  # Return None if no audio was generated
 
 
+def preview_pdf_with_header_footer(pdf_file, header_height, footer_height, page_number):
+    import pdfplumber
+
+    with pdfplumber.open(pdf_file.name) as pdf:
+        if page_number < 1 or page_number > len(pdf.pages):
+            return "Invalid page number selected."
+        page = pdf.pages[page_number - 1]
+        img = page.to_image()
+
+        # Draw header and footer areas
+        img.draw_rects([{"x0": 0, "top": 0, "x1": page.width, "bottom": header_height}], stroke="red", fill=(255, 0, 0, 77))
+        img.draw_rects([{"x0": 0, "top": page.height - footer_height, "x1": page.width, "bottom": page.height}], stroke="blue", fill=(0, 0, 255, 77))
+
+        temp_image_path = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+        img.save(temp_image_path)
+        return temp_image_path
+
+
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
 
     sentences = re.split(r'(?<=\.) ', text)
@@ -228,6 +291,7 @@ with gr.Blocks() as demo:
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
     sections_state = gr.State([])
 
+
     with gr.Row():
         file_input = gr.File(label="Upload Text, EPUB, or PDF File", file_types=[".epub", ".txt", ".pdf"])
 
@@ -245,23 +309,21 @@ with gr.Blocks() as demo:
             value=cloned_speaker_names.value[0] if len(cloned_speaker_names.value) != 0 else None,
         )
 
+
+    # PDF-specific controls (initially hidden)
+    with gr.Row() as pdf_controls:
+        preview_page_selector = gr.Number(visible=False, label="Page Number", value=1, precision=0)
+        header_preview_slider = gr.Slider(visible=False, label="Header Height", minimum=0, maximum=200, value=0, step=1)
+        footer_preview_slider = gr.Slider(visible=False, label="Footer Height", minimum=0, maximum=200, value=0, step=1)
+        preview_image = gr.Image(visible=False, label="Preview with Header/Footer")
+
+    # Text/Section Processing Tab
     with gr.Tab("Process Text/EPUB/PDF"):
         process_button = gr.Button("Process File")
         section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
         section_preview = gr.Textbox(label="Preview Section Content", lines=10)
 
-        process_button.click(
-            process_file,
-            inputs=[file_input],
-            outputs=[section_titles, sections_state]
-        )
-
-        section_titles.change(
-            display_section,
-            inputs=[section_titles, sections_state],
-            outputs=[section_preview]
-        )
-
+    # Generate Audio Tab
     with gr.Tab("Generate Audio"):
         generate_audio_button = gr.Button("Generate Audio")
         audio_output = gr.Audio(label="Generated Audio")
@@ -271,6 +333,57 @@ with gr.Blocks() as demo:
             inputs=[section_preview, section_titles, lang, speaker_type, speaker_name_studio, speaker_name_custom],
             outputs=[audio_output]
         )
+
+        # File Input Change Action
+    file_input.change(
+        process_file,
+        inputs=[file_input],
+        outputs=[section_titles, sections_state]
+    )
+
+    # Dynamically Update PDF Controls Visibility
+    file_input.change(
+        update_pdf_controls,
+        inputs=[file_input],
+        outputs=[
+            preview_page_selector,
+            header_preview_slider,
+            footer_preview_slider,
+            preview_image
+        ]
+    )
+
+    # Dynamically Update Preview on Slider or Page Changes
+    preview_page_selector.change(
+        preview_pdf_with_header_footer,
+        inputs=[file_input, header_preview_slider, footer_preview_slider, preview_page_selector],
+        outputs=[preview_image]
+    )
+
+    header_preview_slider.change(
+        preview_pdf_with_header_footer,
+        inputs=[file_input, header_preview_slider, footer_preview_slider, preview_page_selector],
+        outputs=[preview_image]
+    )
+
+    footer_preview_slider.change(
+        preview_pdf_with_header_footer,
+        inputs=[file_input, header_preview_slider, footer_preview_slider, preview_page_selector],
+        outputs=[preview_image]
+    )
+
+    section_titles.change(
+        display_section,
+        inputs=[section_titles, sections_state],
+        outputs=[section_preview]
+    )
+
+    # Process Button Click Action
+    process_button.click(
+        process_file,
+        inputs=[file_input],
+        outputs=[section_titles, sections_state]
+    )
 
     demo.launch(
         share=False,
