@@ -4,6 +4,8 @@ import tempfile
 import base64
 import json
 
+import pdfplumber
+import re
 import ebooklib
 import requests
 from ebooklib import epub
@@ -42,18 +44,68 @@ except:
 
 def process_file(file):
     if file.name.endswith('.epub'):
-        sections = extract_text_filtered(file.name)
+        sections = extract_text_filtered_epub(file.name)
         section_titles = [section["title"] for section in sections]
         return gr.update(choices=section_titles, value=section_titles[0] if section_titles else None), sections
     elif file.name.endswith('.txt'):
         with open(file.name, 'r', encoding='utf-8') as f:
             text = f.read()
         return gr.update(choices=["Text File Content"], value="Text File Content"), [{"title": "Text File Content", "content": text}]
+    elif file.name.endswith('.pdf'):
+        sections = extract_text_filtered_pdf(file.name)
+        section_titles = [section["title"] for section in sections]
+        return gr.update(choices=section_titles, value=section_titles[0] if section_titles else None), sections
     else:
         return gr.update(choices=[], value=None), []
 
 
-def extract_text_filtered(epub_file):
+# Add PDF-specific text extraction
+def extract_text_filtered_pdf(pdf_file, header_height=50, footer_height=60):
+    """
+    Extract structured text from PDF, organized by headings (H1, H2, H3).
+    """
+    sections = []
+    current_section = None
+    current_text = []
+
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            text = page.filter(
+                lambda obj: header_height < obj["top"] < page.height - footer_height
+            ).extract_text()
+            if not text:
+                continue
+
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # Detect headings (H1, H2, H3)
+                if re.match(r"^\d+\.\s.+", line):  # H1 example
+                    if current_section:
+                        sections.append({"title": current_section, "content": " ".join(current_text)})
+                        current_text = []
+                    current_section = line
+                elif re.match(r"^\d+\.\d+\s.+", line):  # H2 example
+                    if current_section:
+                        sections.append({"title": current_section, "content": " ".join(current_text)})
+                        current_text = []
+                    current_section = line
+                elif re.match(r"^\d+\.\d+\.\d+\s.+", line):  # H3 example
+                    if current_section:
+                        sections.append({"title": current_section, "content": " ".join(current_text)})
+                        current_text = []
+                    current_section = line
+                else:
+                    current_text.append(line)
+
+    # Append the last section
+    if current_section and current_text:
+        sections.append({"title": current_section, "content": " ".join(current_text)})
+
+    return sections
+
+def extract_text_filtered_epub(epub_file):
     book = epub.read_epub(epub_file)
     sections = []
     for item in book.get_items():
@@ -118,7 +170,7 @@ def text_to_audio_with_heading(text, heading, lang="en", speaker_type="Studio", 
 
 
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
-    import re
+
     sentences = re.split(r'(?<=\.) ', text)
     chunks = []
     current_chunk = ""
@@ -177,7 +229,7 @@ with gr.Blocks() as demo:
     sections_state = gr.State([])
 
     with gr.Row():
-        file_input = gr.File(label="Upload Text or EPUB File", file_types=[".epub", ".txt"])
+        file_input = gr.File(label="Upload Text, EPUB, or PDF File", file_types=[".epub", ".txt", ".pdf"])
 
     with gr.Row():
         speaker_type = gr.Dropdown(label="Speaker type", choices=["Studio", "Cloned"], value="Studio")
@@ -193,7 +245,7 @@ with gr.Blocks() as demo:
             value=cloned_speaker_names.value[0] if len(cloned_speaker_names.value) != 0 else None,
         )
 
-    with gr.Tab("Process Text/EPUB"):
+    with gr.Tab("Process Text/EPUB/PDF"):
         process_button = gr.Button("Process File")
         section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
         section_preview = gr.Textbox(label="Preview Section Content", lines=10)
@@ -217,7 +269,7 @@ with gr.Blocks() as demo:
         generate_audio_button.click(
             text_to_audio_with_heading,
             inputs=[section_preview, section_titles, lang, speaker_type, speaker_name_studio, speaker_name_custom],
-            outputs=[audio_output]  # Now it will process a single audio file path
+            outputs=[audio_output]
         )
 
     demo.launch(
