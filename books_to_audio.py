@@ -232,13 +232,11 @@ def extract_text_filtered_epub(epub_file):
 import shutil
 
 
-def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None,
-                               speaker_name_custom=None):
-    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[
-        speaker_name_custom]
-    chunks = split_text_into_chunks(heading + ".\n" + text)
+def text_to_audio_with_heading(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):
+    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
+    chunks = split_text_into_chunks(heading + "\n" + text)
 
-    # Create a temporary directory for caching
+    # Opret en cache-mappe
     cache_dir = os.path.join("demo_outputs", "cache")
     if not os.path.exists(cache_dir):
         os.mkdir(cache_dir)
@@ -269,18 +267,19 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
             fp.write(decoded_audio)
             cached_audio_paths.append(audio_path)
 
-    # Combine cached audio files
+    # Kombiner cachede filer og eksportér i ønsket format
     if len(cached_audio_paths) > 0:
-        combined_audio_path = concatenate_audios(cached_audio_paths)
-        final_path = os.path.join("demo_outputs", "generated_audios", f"{heading}.wav")
+        combined_audio_path = concatenate_audios(cached_audio_paths, output_format)
+        final_path = os.path.join("demo_outputs", "generated_audios", f"{heading}.{output_format}")
         os.rename(combined_audio_path, final_path)
 
-        # Clear cache after successful combination
+        # Ryd cache
         shutil.rmtree(cache_dir)
 
         return final_path
     else:
-        return None  # Return None if no audio was generated
+        return None
+
 
 
 def preview_pdf_with_header_footer(pdf_file, header_height, footer_height, page_number):
@@ -334,14 +333,20 @@ def split_text_into_chunks(text, max_chars=250, max_tokens=350):
         chunks.append(current_chunk.strip())
     return chunks
 
-def concatenate_audios(audio_paths):
+
+def concatenate_audios(audio_paths, output_format="wav"):
+    """
+    Kombinerer flere lydfiler til én og eksporterer i det valgte format.
+    """
     combined = AudioSegment.empty()
     for path in audio_paths:
         audio = AudioSegment.from_file(path)
         combined += audio
-    output_path = os.path.join("demo_outputs", "generated_audios", "combined_audio_temp.wav")
-    combined.export(output_path, format="wav")
+
+    output_path = os.path.join("demo_outputs", "generated_audios", f"combined_audio_temp.{output_format}")
+    combined.export(output_path, format=output_format)
     return output_path
+
 
 def display_section(selected_title, sections):
     for section in sections:
@@ -365,7 +370,7 @@ with gr.Blocks() as demo:
         speaker_name_studio = gr.Dropdown(
             label="Studio speaker",
             choices=STUDIO_SPEAKERS.keys(),
-            value="Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None,
+            value="Abrahan Mack" if "Abrahan Mack" in STUDIO_SPEAKERS.keys() else None,
         )
         speaker_name_custom = gr.Dropdown(
             label="Cloned speaker",
@@ -389,12 +394,15 @@ with gr.Blocks() as demo:
                 section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
                 section_preview = gr.Textbox(label="Preview Section Content", lines=10)
             with gr.Column() as audio_col:
-                generate_audio_button = gr.Button("Generate Audio")
+                with gr.Row():
+                    output_format = gr.Dropdown(label="Output Format", choices=["wav", "mp3"], value="wav")
+                    generate_audio_button = gr.Button("Generate Audio")
                 audio_output = gr.Audio(label="Generated Audio")
 
         generate_audio_button.click(
-            text_to_audio,
-            inputs=[section_preview, section_titles, lang, speaker_type, speaker_name_studio, speaker_name_custom],
+            text_to_audio_with_heading,
+            inputs=[section_preview, section_titles, lang, speaker_type, speaker_name_studio, speaker_name_custom,
+                    output_format],
             outputs=[audio_output]
         )
 
