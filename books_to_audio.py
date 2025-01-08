@@ -12,11 +12,7 @@ from bs4 import BeautifulSoup
 import gradio as gr
 from pydub import AudioSegment
 
-from docx.shared import Inches
-import PyPDF2
-import fitz  # PyMuPDF
-import io
-from PIL import Image
+
 
 SERVER_URL = 'http://localhost:8000'
 OUTPUT = "./demo_outputs"
@@ -48,16 +44,15 @@ except:
 
 def flatten_sections(sections):
     """
-    Flattens the hierarchical sections into a single list for dropdown choices.
+    Flattens sections and their chapters into a single list for Gradio dropdown choices.
     """
     flat_list = []
     for section in sections:
         flat_list.append({"title": section["title"], "content": section["content"]})
-        for subsection in section.get("subsections", []):
-            flat_list.append({"title": subsection["title"], "content": subsection["content"]})
-            for subsubsection in subsection.get("subsubsections", []):
-                flat_list.append({"title": subsubsection["title"], "content": subsubsection["content"]})
+        for chapter in section.get("chapters", []):
+            flat_list.append({"title": f"{section['title']} > {chapter['title']}", "content": chapter["content"]})
     return flat_list
+
 
 def process_file(file):
     """
@@ -68,51 +63,95 @@ def process_file(file):
 
     print(f"Processing file: {file.name}")
 
-    # Process based on file type
-    if file.name.endswith('.epub'):
-        sections = extract_text_filtered_epub(file.name)
-    elif file.name.endswith('.docx'):
-        sections = extract_text_filtered_docx(file.name)
-    elif file.name.endswith('.txt'):
-        sections = extract_text_filtered_txt(file.name)
-    elif file.name.endswith('.pdf'):
-        try:
+    try:
+        # Process based on file type
+        if file.name.endswith('.epub'):
+            sections = extract_text_filtered_epub(file.name)
+        elif file.name.endswith('.docx'):
+            sections = extract_text_filtered_docx(file.name)
+        elif file.name.endswith('.txt'):
+            sections = extract_text_filtered_txt(file.name, file.name)
+        elif file.name.endswith('.pdf'):
             text_from_pdf = extract_text_with_pymupdf(file.name)
             if "No meaningful content" in text_from_pdf[0]:
                 return gr.update(choices=[], value=None), [], text_from_pdf[0]
-            sections = extract_text_filtered_txt(text_from_pdf)
-        except Exception as e:
-            print(f"Error reading PDF file: {e}")
-            return gr.update(choices=[], value=None), [], f"Error reading PDF file: {e}"
-    else:
-        return gr.update(choices=[], value=None), [], "Unsupported file format."
+            sections = extract_text_filtered_txt(text_from_pdf, file.name)
+        else:
+            supported_formats = [".epub", ".txt", ".pdf", ".docx"]
+            return gr.update(choices=[], value=None), [], f"Unsupported file format. Please upload one of: {', '.join(supported_formats)}."
 
-    # Flatten sections for dropdown
-    flat_sections = flatten_sections(sections)
-    section_titles = [item["title"] for item in flat_sections]
-    dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
-    initial_preview = flat_sections[0]["content"] if flat_sections else "No content available."
+        # Flatten and deduplicate sections
+        flat_sections = flatten_sections(sections)
+        unique_sections = deduplicate_sections(flat_sections)
+        section_titles = [item["title"] for item in unique_sections]
+        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
+        initial_preview = unique_sections[0]["content"] if unique_sections else "No content available."
 
-    print(f"Dropdown choices: {section_titles}")
-    print(f"Initial preview: {initial_preview[:100]}...")
+        print(f"Dropdown choices: {section_titles}")
+        print(f"Initial preview: {initial_preview[:100]}...")
 
-    return dropdown_output, flat_sections, initial_preview
+        return dropdown_output, unique_sections, initial_preview
+
+    except Exception as e:
+        print(f"Error processing file {file.name}: {e}")
+        return gr.update(choices=[], value=None), [], f"An error occurred: {str(e)}"
+
+
 
 #------------------------------------------------------------------------------------------------------------
 #PDF to text
 import fitz  # PyMuPDF
+import re
 def extract_text_with_pymupdf(file):
     """
-    Extract text from a PDF using PyMuPDF, skipping empty or irrelevant pages.
+    Extract text from a PDF using PyMuPDF, capturing both chapters and uppercase sections.
+    Filters out irrelevant lines, overly long sentences, and short uppercase lines.
     """
     text_content = []
+    page_number_pattern = re.compile(r"^\s*Page\s*\d+\s*[:\-]*", re.IGNORECASE)  # Matches "Page X:"
+    irrelevant_line_pattern = re.compile(r"(ISBN|Version|copyright|©|rights reserved)", re.IGNORECASE)
+    sentence_like_pattern = re.compile(r"[.?!]$")  # Ends with sentence punctuation
+    chapter_pattern = re.compile(r"^(CHAPTER|Chapter)\s*\d+", re.IGNORECASE)  # Matches "CHAPTER 1", "Chapter 2"
+
     with fitz.open(file) as pdf_document:
         for page_num in range(len(pdf_document)):
             page = pdf_document.load_page(page_num)
             text = page.get_text().strip()
-            if text and "No text found" not in text:
-                text_content.append(f"Page {page_num + 1}:\n{text}\n")
-    return text_content if text_content else ["No meaningful content extracted from the PDF."]
+
+            # Remove page numbers
+            text = page_number_pattern.sub("", text).strip()
+
+            # Process lines
+            lines = text.split('\n')
+            processed_lines = []
+            for line in lines:
+                line = line.strip()
+
+                # Skip irrelevant lines
+                if irrelevant_line_pattern.search(line):
+                    continue
+
+                # Mark chapters explicitly
+                if chapter_pattern.match(line):
+                    processed_lines.append(f"__CHAPTER__{line}")
+                    continue
+
+                # Mark uppercase lines as sections if meaningful
+                if (
+                    line.isupper()
+                    and 3 <= len(line.split()) <= 10  # Word count threshold
+                    and len(line) > 15  # Minimum character length
+                    and not sentence_like_pattern.search(line)  # Avoid sentence-like lines
+                ):
+                    processed_lines.append(f"__SECTION__{line}")
+                else:
+                    processed_lines.append(line)
+
+            text_content.append("\n".join(processed_lines))  # Append cleaned content
+
+    if not text_content:
+        return ["No meaningful content extracted from the PDF."]
+    return text_content
 
 
 #------------------------------------------------------------------------------------------------------------
@@ -132,14 +171,16 @@ def deduplicate_sections(sections):
     return unique_sections
 
 
-def extract_text_filtered_txt(input_data):
+def extract_text_filtered_txt(input_data, file_name):
     """
-    Process text and structure it into deduplicated sections, subsections, and subsubsections.
+    Process text and group chapters under their corresponding sections.
+    Lines marked as __CHAPTER__ or __SECTION__ are used to build a hierarchical structure.
+    If no sections are detected, all content is grouped under a single section named after the uploaded file.
     """
     sections = []
-    section = None
-    subsection = None
-    subsubsection = None
+    current_section = None
+    seen_sections = set()  # Track seen sections to avoid duplicates
+    seen_chapters = set()  # Track seen chapters to avoid duplicates
 
     if isinstance(input_data, list):
         lines = [line for page in input_data for line in page.split('\n')]
@@ -156,41 +197,47 @@ def extract_text_filtered_txt(input_data):
         if not line or re.match(r"^\d+$", line):  # Skip empty or irrelevant numeric lines
             continue
 
-        # Detect sections (e.g., "CHAPTER 1", "Section 2")
-        if re.match(r"^(CHAPTER|Chapter|SECTION|Section)\s*\d+", line, re.IGNORECASE):
-            if section:
-                sections.append(section)
-            section = {"title": line.title(), "content": "", "subsections": []}
-            subsection = None
-            subsubsection = None
-            print(f"New section detected: {line}")
-        # Detect subsections (e.g., "3.1.")
-        elif re.match(r"^\d+\.\d+\.\s", line):
-            if subsection:
-                section["subsections"].append(subsection)
-            subsection = {"title": line, "content": "", "subsubsections": []}
-            subsubsection = None
-            print(f"New subsection detected: {line}")
+        # Detect sections
+        if line.startswith("__SECTION__"):
+            section_title = line.replace("__SECTION__", "").strip()
+
+            if section_title not in seen_sections:
+                # Finalize the previous section if it exists
+                if current_section:
+                    sections.append(current_section)
+
+                # Start a new section
+                current_section = {"title": section_title, "content": "", "chapters": []}
+                seen_sections.add(section_title)
+                print(f"New section detected: {section_title}")
+
+        # Detect chapters
+        elif line.startswith("__CHAPTER__"):
+            chapter_title = line.replace("__CHAPTER__", "").strip()
+
+            if current_section and chapter_title not in seen_chapters:
+                current_section["chapters"].append({"title": chapter_title, "content": ""})
+                seen_chapters.add(chapter_title)
+                print(f"New chapter detected under section '{current_section['title']}': {chapter_title}")
+
+        # Add content to the current section or chapter
         else:
-            # Add content to the current level
-            if subsubsection:
-                subsubsection["content"] += line + " "
-            elif subsection:
-                subsection["content"] += line + " "
-            elif section:
-                section["content"] += line + " "
-            print(f"Adding content to current level: {line}")
+            if current_section:
+                if current_section["chapters"]:
+                    # Add to the last chapter
+                    current_section["chapters"][-1]["content"] += line + " "
+                else:
+                    # Add to the section content if no chapters exist yet
+                    current_section["content"] += line + " "
+            else:
+                # If no section, initialize with the file name as the title
+                if not current_section:
+                    section_title = os.path.splitext(os.path.basename(file_name))[0]
+                    current_section = {"title": section_title, "content": line + " ", "chapters": []}
 
-    # Append the last section, subsection, or subsubsection
-    if subsubsection:
-        subsection["subsubsections"].append(subsubsection)
-    if subsection:
-        section["subsections"].append(subsection)
-    if section:
-        sections.append(section)
-
-    # Deduplicate sections
-    sections = deduplicate_sections(sections)
+    # Finalize the last section
+    if current_section:
+        sections.append(current_section)
 
     print(f"Total unique sections processed: {len(sections)}")
     return sections
