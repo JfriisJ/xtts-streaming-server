@@ -210,39 +210,6 @@ def group_by_sections(text_blocks):
     return sections
 
 
-
-
-def extract_text_filtered_html(file_obj):
-    """
-    Extract structured text from an HTML file using numeric patterns for sections and subsections.
-    """
-    try:
-        # If file_obj is a Gradio file, use its temporary file path
-        file_path = file_obj.name if hasattr(file_obj, 'name') else str(file_obj)
-
-        # Open the file and read its content
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        # Debugging: Check the content read from the file
-        print("HTML Content Snippet:", content[:500])  # Print the first 500 characters of the content
-
-        # Parse HTML content
-        soup = BeautifulSoup(content, 'html.parser')
-
-        # Debugging: Verify parsing results
-        print("Parsed HTML Tags:", soup.find_all(['h1', 'div'], limit=5))  # Print first 5 tags for validation
-
-        # Extract all text within <div> tags
-        text_blocks = [div.get_text(strip=True) for div in soup.find_all('div') if div.get_text(strip=True)]
-        print("Extracted Text Blocks:", text_blocks[:5])  # Print the first 5 text blocks
-
-        return group_by_sections(text_blocks)
-    except Exception as e:
-        raise ValueError(f"Error processing HTML file: {e}")
-
-
-
 #-------------------------------------------------------------------------------------------
 
 
