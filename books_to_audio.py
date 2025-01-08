@@ -89,14 +89,15 @@ test_tts_streaming("Hello, how are you doing today?", "en", "Studio", "Abrahan M
 #-------------------------------------------------------------------------------------------
 def flatten_sections(sections):
     """
-    Recursively flattens hierarchical sections into a single list for dropdown choices.
+    Recursively flattens hierarchical sections into a single list for dropdown choices,
+    adding prefixes to distinguish sections, subsections, and subsubsections.
     """
     flat_list = []
 
-    def add_section(section):
-        flat_list.append({"title": section["title"], "content": section["content"]})
+    def add_section(section, prefix="Section"):
+        flat_list.append({"title": f"{prefix}: {section['title']}", "content": section["content"]})
         for subsection in section.get("subsections", []):
-            add_section(subsection)
+            add_section(subsection, prefix="Subsection")
 
     for section in sections:
         add_section(section)
@@ -106,6 +107,9 @@ def flatten_sections(sections):
 
 
 def process_file(file):
+    """
+    Processes the uploaded ODT file and extracts structured content (sections, subsections, subsubsections).
+    """
     if file is None:
         return gr.update(choices=[], value=None), [], "No file uploaded."
 
@@ -183,31 +187,6 @@ def extract_text_filtered_odt(odt_file_path):
 
 #-------------------------------------------------------------------------------------------
 
-# Function to group content into sections based on numeric patterns
-def group_by_sections(text_blocks):
-    sections = []
-    current_section = None
-
-    for block in text_blocks:
-        # Match section/subsection headers (e.g., 1., 1.1, 2.5.1)
-        header_match = re.match(r"^\d+(\.\d+)*\s", block)
-        if header_match:
-            # Start a new section
-            if current_section:
-                sections.append(current_section)
-            current_section = {"title": block.strip(), "content": ""}
-        else:
-            # Add content to the current section
-            if current_section:
-                current_section["content"] += block.strip() + "\n"
-                print(block)
-
-    # Append the last section if any
-    if current_section:
-        print(current_section)
-        sections.append(current_section)
-
-    return sections
 
 
 #-------------------------------------------------------------------------------------------
