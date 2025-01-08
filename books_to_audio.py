@@ -133,7 +133,6 @@ def process_file(file):
 
 #-------------------------------------------------------------------------------------------
 
-
 def extract_text_filtered_odt(odt_file_path):
     from lxml import etree
     from zipfile import ZipFile
@@ -151,30 +150,44 @@ def extract_text_filtered_odt(odt_file_path):
         namespaces = {'text': 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'}
 
         sections = []
-        current_section = {"title": "Untitled Section", "content": "", "subsections": []}
+        stack = []  # Stack to maintain hierarchy
         heading_count = 0
         paragraph_count = 0
+        main_section_set = False  # Flag to check if the main section is set
 
         for element in root.iter():
             # Skip irrelevant or empty tags
             if element.text is None or not element.text.strip():
                 continue
 
-            if element.tag.endswith('h'):
-                heading_count += 1
-                title = element.text.strip()
-                # Handle section creation
-                if current_section and current_section["content"]:
-                    sections.append(current_section)
-                current_section = {"title": title, "content": "", "subsections": []}
-            elif element.tag.endswith('p'):
-                paragraph_count += 1
-                text = element.text.strip()
-                current_section["content"] += text + "\n"
+            element_text = element.text.strip()
 
-        # Append the final section
-        if current_section and current_section["content"]:
-            sections.append(current_section)
+            if not main_section_set:  # Set the first non-empty line as the section title
+                main_section = {"title": element_text, "content": "", "subsections": []}
+                sections.append(main_section)
+                stack.append((main_section, 1))  # Main section at level 1
+                main_section_set = True
+                print(f"Set main section title: {element_text}")
+                continue
+
+            if element.tag.endswith('h'):  # Heading tag
+                heading_count += 1
+                level = int(element.attrib.get('outline-level', 2))  # Default to level 2 for subsections
+                print(f"Detected heading: {element_text}, Level: {level}")
+                new_section = {"title": element_text, "content": "", "subsections": []}
+
+                # Maintain hierarchy by popping from the stack as needed
+                while stack and stack[-1][1] >= level:
+                    stack.pop()
+                # Add as a subsection to the last section on the stack
+                if stack:
+                    stack[-1][0]["subsections"].append(new_section)
+                stack.append((new_section, level))
+            elif element.tag.endswith('p'):  # Paragraph tag
+                paragraph_count += 1
+                if stack:
+                    # Add paragraph content to the current section
+                    stack[-1][0]["content"] += element_text + "\n"
 
         print(f"Extraction complete. Total sections: {len(sections)}, headings: {heading_count}, paragraphs: {paragraph_count}")
         return sections
