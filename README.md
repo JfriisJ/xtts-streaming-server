@@ -83,8 +83,11 @@ $ python test_streaming.py
 ```
 
 ```bash
+$ docker build -t xtts-stream . -f Dockerfile.cuda121
+```
+```bash
 $ docker run --gpus all -e COQUI_TOS_AGREED=1 --rm -p 8000:80 xtts-stream
 ```
 ```bash
-$python pdf_streamer.py
+$python books_to_audio.py
 ```
