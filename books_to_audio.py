@@ -7,6 +7,8 @@ import requests
 from bs4 import BeautifulSoup
 import gradio as gr
 from pydub import AudioSegment
+from zipfile import ZipFile
+from lxml import etree
 
 
 #-------------------------------------------------------------------------------------------
@@ -87,11 +89,8 @@ test_tts_streaming("Hello, how are you doing today?", "en", "Studio", "Abrahan M
 
 
 #-------------------------------------------------------------------------------------------
+# Flatten Sections for Dropdown
 def flatten_sections(sections):
-    """
-    Recursively flattens hierarchical sections into a single list for dropdown choices,
-    adding prefixes to distinguish sections, subsections, and subsubsections.
-    """
     flat_list = []
 
     def add_section(section, prefix="Section"):
@@ -105,95 +104,102 @@ def flatten_sections(sections):
     return flat_list
 
 
-
+# Process ODT File
 def process_file(file):
-    """
-    Processes the uploaded ODT file and extracts structured content (sections, subsections, subsubsections).
-    """
     if file is None:
         return gr.update(choices=[], value=None), [], "No file uploaded."
 
     try:
-        sections = extract_text_filtered_odt(file.name)
-        if not sections:
+        doc_structure = extract_odt_structure(file.name)
+        if not doc_structure["sections"]:
             return gr.update(choices=[], value=None), [], "No sections found in the document."
 
-        flat_sections = flatten_sections(sections)
-        section_titles = [item["title"] for item in flat_sections]
+        sections = doc_structure["sections"]
+        flat_sections = [{"title": f"Level {sec['level']}: {sec['title']}", "content": sec['content']} for sec in sections]
+        section_titles = [sec["title"] for sec in flat_sections]
         dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
         initial_preview = flat_sections[0]["content"] if flat_sections else "No content available."
 
         return dropdown_output, flat_sections, initial_preview
-
     except Exception as e:
         return gr.update(choices=[], value=None), [], f"Error processing ODT file: {e}"
 
 
 
-
 #-------------------------------------------------------------------------------------------
 
-def extract_text_filtered_odt(odt_file_path):
-    from lxml import etree
-    from zipfile import ZipFile
+# ODT Processing Function
+def extract_odt_structure(odt_file_path):
+    def get_full_text(element):
+        """Recursively extract text from an XML element and its children."""
+        texts = []
+        if element.text:
+            texts.append(element.text.strip())
+        for child in element:
+            texts.append(get_full_text(child))
+        if element.tail:
+            texts.append(element.tail.strip())
+        return " ".join(filter(None, texts))
 
     try:
-        print(f"Opening ODT file: {odt_file_path}")
-
         with ZipFile(odt_file_path, 'r') as odt_zip:
-            if 'content.xml' not in odt_zip.namelist():
-                raise ValueError("content.xml not found in ODT file.")
-            with odt_zip.open('content.xml') as content_file:
-                content = content_file.read()
+            # Extract and parse meta.xml for title and author
+            if 'meta.xml' in odt_zip.namelist():
+                with odt_zip.open('meta.xml') as meta_file:
+                    meta_content = meta_file.read()
+                    meta_root = etree.fromstring(meta_content)
+                    namespaces = {
+                        'meta': 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0',
+                        'dc': 'http://purl.org/dc/elements/1.1/'
+                    }
+                    title = meta_root.find('.//dc:title', namespaces)
+                    author = meta_root.find('.//meta:initial-creator', namespaces)
+                    title_text = title.text if title is not None else "Unknown Title"
+                    author_text = author.text if author is not None else "Unknown Author"
+            else:
+                title_text, author_text = "Unknown Title", "Unknown Author"
 
-        root = etree.fromstring(content)
-        namespaces = {'text': 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'}
+            # Extract and parse content.xml for headings and content
+            if 'content.xml' in odt_zip.namelist():
+                with odt_zip.open('content.xml') as content_file:
+                    content = content_file.read()
+                    content_root = etree.fromstring(content)
+                    namespaces = {'text': 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'}
 
-        sections = []
-        stack = []  # Stack to maintain hierarchy
-        heading_count = 0
-        paragraph_count = 0
-        main_section_set = False  # Flag to check if the main section is set
+                    headings = []
+                    current_content = []
+                    last_heading = None
 
-        for element in root.iter():
-            # Skip irrelevant or empty tags
-            if element.text is None or not element.text.strip():
-                continue
+                    for element in content_root.iter():
+                        tag = element.tag.split('}')[-1]  # Remove namespace
+                        if tag == "h":  # Heading
+                            # Save the content of the last heading
+                            if last_heading is not None:
+                                last_heading["content"] = "\n".join(current_content).strip()
+                                current_content = []
 
-            element_text = element.text.strip()
+                            level = element.attrib.get(f'{{{namespaces["text"]}}}outline-level')
+                            full_text = get_full_text(element)  # Extract all nested text
+                            level = int(level) if level else 1  # Default to Level 1
+                            last_heading = {"level": level, "title": full_text, "content": ""}
+                            headings.append(last_heading)
+                        elif tag == "p":  # Paragraph
+                            # Collect content for the current heading
+                            if last_heading is not None:
+                                paragraph_text = get_full_text(element).strip()
+                                if paragraph_text:
+                                    current_content.append(paragraph_text)
 
-            if not main_section_set:  # Set the first non-empty line as the section title
-                main_section = {"title": element_text, "content": "", "subsections": []}
-                sections.append(main_section)
-                stack.append((main_section, 1))  # Main section at level 1
-                main_section_set = True
-                print(f"Set main section title: {element_text}")
-                continue
+                    # Handle the last heading's content
+                    if last_heading is not None:
+                        last_heading["content"] = "\n".join(current_content).strip()
 
-            if element.tag.endswith('h'):  # Heading tag
-                heading_count += 1
-                level = int(element.attrib.get('outline-level', 2))  # Default to level 2 for subsections
-                print(f"Detected heading: {element_text}, Level: {level}")
-                new_section = {"title": element_text, "content": "", "subsections": []}
+            else:
+                headings = []
 
-                # Maintain hierarchy by popping from the stack as needed
-                while stack and stack[-1][1] >= level:
-                    stack.pop()
-                # Add as a subsection to the last section on the stack
-                if stack:
-                    stack[-1][0]["subsections"].append(new_section)
-                stack.append((new_section, level))
-            elif element.tag.endswith('p'):  # Paragraph tag
-                paragraph_count += 1
-                if stack:
-                    # Add paragraph content to the current section
-                    stack[-1][0]["content"] += element_text + "\n"
-
-        print(f"Extraction complete. Total sections: {len(sections)}, headings: {heading_count}, paragraphs: {paragraph_count}")
-        return sections
+        return {"title": title_text, "author": author_text, "sections": headings}
 
     except Exception as e:
-        print(f"Error during ODT extraction: {e}")
         raise ValueError(f"Error extracting content from ODT file: {e}")
 
 
@@ -363,68 +369,46 @@ def text_to_audio_streaming(text, heading, lang="en", speaker_type="Studio", spe
         return None
 
 
+# Display Section Content
 def display_section(selected_title, sections):
     for section in sections:
         if section["title"] == selected_title:
             return section["content"]
     return "Section not found."
 
-
+# Gradio Interface
 with gr.Blocks() as demo:
     sections_state = gr.State([])
 
-    # File Upload Row
     with gr.Row():
         file_input = gr.File(
             label="Upload ODT File",
-            file_types=[".odt"],  # Only allow ODT files
+            file_types=[".odt"],
         )
 
-    # Text/Section Processing Tab
     with gr.Tab("Process ODT"):
         with gr.Row():
-            with gr.Column() as process_col:
-                # Button to Process File
+            with gr.Column():
                 process_button = gr.Button("Process File")
-                # Dropdown for Section Titles
                 section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
-                # Textbox to Preview Section Content
                 section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
-            with gr.Column() as tts_col:
-                with gr.Row():
-                    # Dropdown for TTS Output Format
-                    output_format = gr.Dropdown(label="Output Format", choices=["wav", "mp3"], value="wav")
-                    # Button to Generate Audio
-                    tts_button = gr.Button("Generate Audio")
-                # Audio Output
-                audio_output = gr.Audio(label="Generated Audio")
 
-        # File Input Change Action
         file_input.change(
             process_file,
             inputs=[file_input],
             outputs=[section_titles, sections_state, section_preview],
         )
 
-        # Section Titles Dropdown Change Action
         section_titles.change(
             display_section,
             inputs=[section_titles, sections_state],
             outputs=[section_preview],
         )
 
-        # Process Button Click Action
         process_button.click(
             process_file,
             inputs=[file_input],
             outputs=[section_titles, sections_state, section_preview],
-        )
-
-        # TTS Button Click Action
-        tts_button.click(
-            text_to_audio,
-            inputs=[section_preview, section_titles, output_format],
-            outputs=[audio_output],
         )
 
     demo.launch(
