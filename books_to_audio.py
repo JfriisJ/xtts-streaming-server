@@ -4,7 +4,6 @@ import json
 import shutil
 import re
 import requests
-from bs4 import BeautifulSoup
 import gradio as gr
 from pydub import AudioSegment
 from zipfile import ZipFile
@@ -184,6 +183,43 @@ def extract_odt_structure(odt_file_path):
 
 
 #-------------------------------------------------------------------------------------------
+def generate_audio(selected_title, sections):
+    if not selected_title:
+        print("No title selected for TTS.")
+        return None
+
+    if not sections:
+        print("No sections available for TTS.")
+        return None
+
+    # Strip the style label from the title (e.g., "Title: APPLES to CIDER" -> "APPLES to CIDER")
+    clean_title = re.sub(r"^(Title|Heading \d+): ", "", selected_title)
+
+    # Aggregate content for the selected title
+    aggregated_content = get_aggregated_content(selected_title, sections)
+    if not aggregated_content:
+        print(f"No content found for section: {selected_title}")
+        return None
+
+    # Generate audio using text_to_audio
+    try:
+        print(f"Generating audio for: {clean_title}")
+        audio_path = text_to_audio(
+            text=aggregated_content,
+            heading=clean_title,
+            lang="en",  # Default to English
+            speaker_type="Studio",  # Default speaker type
+            speaker_name_studio=list(STUDIO_SPEAKERS.keys())[0],  # Default studio speaker
+            speaker_name_custom=None  # No custom speaker by default
+        )
+        print(f"Audio generated at: {audio_path}")
+        return audio_path
+    except Exception as e:
+        print(f"Error generating audio: {e}")
+        return None
+
+
+
 def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None,
                   output_format="wav"):
     # Get the first line as the file name
@@ -428,6 +464,8 @@ with gr.Blocks() as demo:
                 process_button = gr.Button("Process File")
                 section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
                 section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
+                tts_button = gr.Button("Generate Audio")
+                audio_output = gr.Audio(label="Generated Audio", interactive=False)
 
         # File Input Change Action
         file_input.change(
@@ -441,6 +479,13 @@ with gr.Blocks() as demo:
             display_section,
             inputs=[section_titles, sections_state],
             outputs=[section_preview],
+        )
+
+        # TTS Button Click Action
+        tts_button.click(
+            generate_audio,
+            inputs=[section_titles, sections_state],
+            outputs=[audio_output],
         )
 
         process_button.click(
