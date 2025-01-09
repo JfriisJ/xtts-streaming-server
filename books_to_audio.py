@@ -15,6 +15,10 @@ from lxml import etree
 SERVER_URL = 'http://localhost:8000'
 OUTPUT = "./demo_outputs"
 cloned_speakers = {}
+os.makedirs(os.path.join(OUTPUT, "cloned_speakers"), exist_ok=True)
+os.makedirs(os.path.join(OUTPUT, "generated_audios"), exist_ok=True)
+print("File structure prepared.")
+
 
 print("Preparing file structure...")
 if not os.path.exists(OUTPUT):
@@ -42,61 +46,38 @@ except:
 #Test the tts function
 import time
 
-
-
-def test_tts(text, lang, speaker_type, speaker_name_studio, speaker_name_custom):
-    # Warm-up code here...
+def test_tts(text, lang, speaker_type, speaker_name_studio, speaker_name_custom, stream=False):
     start_time = time.time()
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
-    response = requests.post(
-        SERVER_URL + "/tts",
-        json={
-            "text": text,
-            "language": lang,
-            "speaker_embedding": embeddings["speaker_embedding"],
-            "gpt_cond_latent": embeddings["gpt_cond_latent"]
-        }
-    )
+    endpoint = "/tts_stream" if stream else "/tts"
+    payload = {
+        "text": text,
+        "language": lang,
+        "speaker_embedding": embeddings["speaker_embedding"],
+        "gpt_cond_latent": embeddings["gpt_cond_latent"]
+    }
+    if stream:
+        payload["add_wav_header"] = True
+        payload["stream_chunk_size"] = "10"
+
+    response = requests.post(SERVER_URL + endpoint, json=payload, stream=stream)
     if response.status_code == 200:
-        print(f"TTS request completed in {time.time() - start_time:.2f} seconds.")
+        print(f"TTS request ({'streaming' if stream else 'normal'}) completed in {time.time() - start_time:.2f} seconds.")
     else:
         print(f"TTS request failed: {response.status_code} - {response.text}")
 
-
-def test_tts_streaming(text, lang, speaker_type, speaker_name_studio, speaker_name_custom):
-    # Warm-up code here...
-    start_time = time.time()
-    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == 'Studio' else cloned_speakers[speaker_name_custom]
-    response = requests.post(
-        SERVER_URL + "/tts_stream",
-        json={
-            "text": text,
-            "language": lang,
-            "speaker_embedding": embeddings["speaker_embedding"],
-            "gpt_cond_latent": embeddings["gpt_cond_latent"],
-            "add_wav_header": True,
-            "stream_chunk_size": "10"
-        },
-        stream=True
-    )
-    if response.status_code == 200:
-        print(f"TTS streaming request completed in {time.time() - start_time:.2f} seconds.")
-    else:
-        print(f"TTS streaming request failed: {response.status_code} - {response.text}")
-
-test_tts("Hello, how are you doing today?", "en", "Studio", "Abrahan Mack", None)
-test_tts_streaming("Hello, how are you doing today?", "en", "Studio", "Abrahan Mack", None)
-
-
 #-------------------------------------------------------------------------------------------
 # Flatten Sections for Dropdown
-def flatten_sections(sections):
+def flatten_sections(sections, prefix=""):
+    """
+    Flattens a hierarchical structure into a flat list with titles prefixed by their depth.
+    """
     flat_list = []
 
-    def add_section(section, prefix="Section"):
-        flat_list.append({"title": f"{prefix}: {section['title']}", "content": section["content"]})
+    def add_section(section, depth=1):
+        flat_list.append({"title": f"{prefix} {section['style']}: {section['title']}", "content": section["content"]})
         for subsection in section.get("subsections", []):
-            add_section(subsection, prefix="Subsection")
+            add_section(subsection, depth + 1)
 
     for section in sections:
         add_section(section)
@@ -104,31 +85,32 @@ def flatten_sections(sections):
     return flat_list
 
 
-# Process ODT File
 def process_file(file):
     if file is None:
+        print("No file uploaded.")
         return gr.update(choices=[], value=None), [], "No file uploaded."
 
     try:
         doc_structure = extract_odt_structure(file.name)
-        if not doc_structure["sections"]:
+        sections = doc_structure.get("sections", [])
+        if not sections:
+            print("No sections found in document.")
             return gr.update(choices=[], value=None), [], "No sections found in the document."
 
-        sections = doc_structure["sections"]
-        flat_sections = [{"title": f"Level {sec['level']}: {sec['title']}", "content": sec['content']} for sec in sections]
+        flat_sections = [{"title": f"{sec['style']}: {sec['title']}", "content": sec.get("content", "")} for sec in sections]
         section_titles = [sec["title"] for sec in flat_sections]
+
+        print(f"Sections extracted: {len(flat_sections)}")
         dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
         initial_preview = flat_sections[0]["content"] if flat_sections else "No content available."
 
         return dropdown_output, flat_sections, initial_preview
     except Exception as e:
-        return gr.update(choices=[], value=None), [], f"Error processing ODT file: {e}"
-
-
-
+        print(f"Error processing file: {e}")
+        return gr.update(choices=[], value=None), [], f"Error processing file: {e}"
 #-------------------------------------------------------------------------------------------
 
-# ODT Processing Function
+#-------------------------------------------------------------------------------------------
 def extract_odt_structure(odt_file_path):
     def get_full_text(element):
         """Recursively extract text from an XML element and its children."""
@@ -141,24 +123,18 @@ def extract_odt_structure(odt_file_path):
             texts.append(element.tail.strip())
         return " ".join(filter(None, texts))
 
+    # Mapping from outline levels to ODT styles
+    outline_to_style = {
+        1: "Title",
+        2: "Heading 1",
+        3: "Heading 2",
+        4: "Heading 3",
+        5: "Heading 4",
+        6: "Heading 5",
+    }
+
     try:
         with ZipFile(odt_file_path, 'r') as odt_zip:
-            # Extract and parse meta.xml for title and author
-            if 'meta.xml' in odt_zip.namelist():
-                with odt_zip.open('meta.xml') as meta_file:
-                    meta_content = meta_file.read()
-                    meta_root = etree.fromstring(meta_content)
-                    namespaces = {
-                        'meta': 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0',
-                        'dc': 'http://purl.org/dc/elements/1.1/'
-                    }
-                    title = meta_root.find('.//dc:title', namespaces)
-                    author = meta_root.find('.//meta:initial-creator', namespaces)
-                    title_text = title.text if title is not None else "Unknown Title"
-                    author_text = author.text if author is not None else "Unknown Author"
-            else:
-                title_text, author_text = "Unknown Title", "Unknown Author"
-
             # Extract and parse content.xml for headings and content
             if 'content.xml' in odt_zip.namelist():
                 with odt_zip.open('content.xml') as content_file:
@@ -179,10 +155,14 @@ def extract_odt_structure(odt_file_path):
                                 current_content = []
 
                             level = element.attrib.get(f'{{{namespaces["text"]}}}outline-level')
+                            style = outline_to_style.get(int(level), f"Unknown Level ({level})") if level else "Unknown Style"
+
                             full_text = get_full_text(element)  # Extract all nested text
-                            level = int(level) if level else 1  # Default to Level 1
-                            last_heading = {"level": level, "title": full_text, "content": ""}
+                            last_heading = {"style": style, "title": full_text, "content": ""}
                             headings.append(last_heading)
+
+                            # Debug print
+                            print(f"Extracted heading: {last_heading}")
                         elif tag == "p":  # Paragraph
                             # Collect content for the current heading
                             if last_heading is not None:
@@ -197,21 +177,13 @@ def extract_odt_structure(odt_file_path):
             else:
                 headings = []
 
-        return {"title": title_text, "author": author_text, "sections": headings}
+        return {"sections": headings}
 
     except Exception as e:
         raise ValueError(f"Error extracting content from ODT file: {e}")
 
 
-
 #-------------------------------------------------------------------------------------------
-
-
-
-#-------------------------------------------------------------------------------------------
-
-
-
 def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None,
                   output_format="wav"):
     # Get the first line as the file name
@@ -367,14 +339,78 @@ def text_to_audio_streaming(text, heading, lang="en", speaker_type="Studio", spe
         return final_path
     else:
         return None
+#-------------------------------------------------------------------------------------------
+def build_hierarchy(sections):
+    hierarchy = []
+    stack = []
 
+    style_to_level = {
+        "Title": 1,
+        "Heading 1": 2,
+        "Heading 2": 3,
+        "Heading 3": 4,
+        "Heading 4": 5,
+        "Heading 5": 6,
+    }
 
-# Display Section Content
-def display_section(selected_title, sections):
     for section in sections:
-        if section["title"] == selected_title:
-            return section["content"]
-    return "Section not found."
+        if "style" not in section or "title" not in section:
+            print(f"Invalid section: {section}")
+            continue
+
+        level = style_to_level.get(section["style"], 1)
+        while stack and style_to_level.get(stack[-1]["style"], 1) >= level:
+            stack.pop()
+
+        if stack:
+            parent = stack[-1]
+            parent.setdefault("subsections", []).append(section)
+        else:
+            hierarchy.append(section)
+
+        stack.append(section)
+
+    return hierarchy
+
+
+def get_aggregated_content(selected_title, sections, include_subsections=True):
+    aggregated_content = []
+
+    def collect_content(section, include, depth=0):
+        indent = "  " * depth
+        if section.get("title") == selected_title:
+            include = True
+            print(f"{indent}*** Matched section: '{section['title']}' (Style: {section.get('style', 'Unknown Style')})")
+
+        if include:
+            aggregated_content.append(section.get("content", ""))
+
+        for subsection in section.get("subsections", []):
+            collect_content(subsection, include, depth + 1)
+
+    for section in sections:
+        collect_content(section, include=False)
+
+    return "\n\n".join(filter(None, aggregated_content))
+
+
+def display_section(selected_title, sections):
+    if not selected_title:
+        print("No title selected.")
+        return "No content available: No title selected."
+    if not sections:
+        print("No sections available.")
+        return "No content available: No sections found."
+
+    aggregated_content = get_aggregated_content(selected_title, sections)
+    if aggregated_content:
+        return aggregated_content
+    else:
+        print(f"No content found for '{selected_title}'")
+        return "No content found for the selected section."
+
+
+#-------------------------------------------------------------------------------------------
 
 # Gradio Interface
 with gr.Blocks() as demo:
@@ -393,12 +429,14 @@ with gr.Blocks() as demo:
                 section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
                 section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
 
+        # File Input Change Action
         file_input.change(
             process_file,
             inputs=[file_input],
             outputs=[section_titles, sections_state, section_preview],
         )
 
+        # Section Titles Dropdown Change Action
         section_titles.change(
             display_section,
             inputs=[section_titles, sections_state],
