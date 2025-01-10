@@ -8,21 +8,26 @@ services:
     ports:
       - "3009:3009"
     depends_on:
-      - text_to_speech
-      - text_extraction
-      - converter
-      - tts_server
+      tts_server:
+        condition: service_healthy
+      text_to_speech:
+        condition: service_healthy
+      text_extraction:
+        condition: service_healthy
+      converter:
+        condition: service_healthy
     environment:
       - TTS_API=http://text_to_speech:8003
       - TEXT_EXTRACTION_API=http://text_extraction:8001
     volumes:
       - frontend_logs:/app/logs
+    networks:
+      - app_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3009"]
+      test: curl --fail http://localhost:3009 || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
 
   text_to_speech:
     container_name: text-to-speech
@@ -35,15 +40,17 @@ services:
     environment:
         - TTS_SERVER=http://tts_server:80
     depends_on:
-      - tts_server
+      tts_server:
+        condition: service_healthy
     volumes:
       - tts_logs:/app/logs
+    networks:
+      - app_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://text_to_speech:8003/health"]
+      test:  curl --fail http://text_to_speech:8003/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
 
   text_extraction:
     container_name: text_extraction
@@ -59,12 +66,13 @@ services:
       - converter
     volumes:
       - text_extraction_logs:/app/logs
+    networks:
+      - app_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://text_extraction:8001/health"]
+      test:  curl --fail http://text_extraction:8001/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
 
   converter:
     container_name: converter
@@ -77,12 +85,13 @@ services:
     volumes:
       - converter_uploads:/app/uploads
       - converter_outputs:/app/outputs
+    networks:
+      - app_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://converter:5000/health"]
+      test: curl --fail http://converter:5000/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
 
   tts_server:
     container_name: xtts-stream
@@ -98,12 +107,14 @@ services:
     restart: unless-stopped
     volumes:
       - tts_server_models:/app/tts_models
+    networks:
+      - app_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://tts_server:8000/health"]
+      test:  curl --fail http://tts_server:80/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      start_period: 60s
 
 volumes:
   tts_server_models:
@@ -118,3 +129,7 @@ volumes:
     driver: local
   converter_outputs:
     driver: local
+
+networks:
+  app_network:
+    driver: bridge

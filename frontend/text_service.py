@@ -1,6 +1,15 @@
+import logging
 from zipfile import ZipFile
 from lxml import etree
 import re
+
+# Setup logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 def get_full_text(element):
     """Recursively extract text from an XML element and its children."""
@@ -72,6 +81,12 @@ def extract_odt_structure(odt_file_path):
 
                     if last_heading is not None:
                         last_heading["content"] = "\n".join(current_content).strip()
+
+            if 'content.xml' not in odt_zip.namelist():
+                raise ValueError("The ODT file does not contain content.xml.")
+
+            if 'meta.xml' not in odt_zip.namelist():
+                logger.warning("The ODT file does not contain meta.xml. Defaulting to 'Unknown Book'.")
 
             return {"title": book_title, "sections": headings}
 

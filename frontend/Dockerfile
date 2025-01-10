@@ -2,6 +2,11 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
+# Install curl and other necessary dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy application files
 COPY frontend.py requirements.txt audio_service.py text_service.py ./
 

@@ -4,8 +4,13 @@ FROM python:3.9-slim
 # Set the working directory inside the container
 WORKDIR /app
 
+# Install curl and other necessary dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy application files
-COPY text_to_speech.py requirements.txt ./
+COPY text_to_speech.py requirements.txt default_speaker.json ./
 
 # Install dependencies
 RUN pip install --no-cache-dir --upgrade pip && \

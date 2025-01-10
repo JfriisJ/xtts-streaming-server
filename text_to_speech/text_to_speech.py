@@ -1,3 +1,5 @@
+import json
+
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 import requests
@@ -30,6 +32,19 @@ STUDIO_SPEAKERS_API = f"{TTS_SERVER}/studio_speakers"
 LANGUAGES_API = f"{TTS_SERVER}/languages"
 
 
+
+with open("default_speaker.json", "r") as fp:
+    warmup_speaker = json.load(fp)
+resp = requests.post(
+    TTS_SERVER + "/tts",
+    json={
+        "text": "This is a warmup request.",
+        "language": "en",
+        "speaker_embedding": warmup_speaker["speaker_embedding"],
+        "gpt_cond_latent": warmup_speaker["gpt_cond_latent"],
+    }
+)
+
 @app.post("/clone_speaker")
 async def clone_speaker(wav_file: UploadFile):
     """Clones a speaker using the /clone_speaker endpoint."""
@@ -51,21 +66,35 @@ async def tts(data: dict):
     try:
         logger.info(f"Performing TTS for text: {data.get('text', '')[:50]}...")
         response = requests.post(TTS_API, json=data)
-        response.raise_for_status()
-        audio_data = response.json().get("audio")
+        logger.debug(f"TTS response content: {response.content}")
+
+        # Check if the response is valid JSON
+        try:
+            response_data = response.json()
+        except ValueError:
+            logger.error(f"Invalid JSON response: {response.content}")
+            raise HTTPException(status_code=500, detail="Invalid response from TTS server.")
+
+        # Ensure the 'audio' key exists
+        audio_data = response_data.get("audio")
         if not audio_data:
             logger.error("No audio data returned by the TTS server.")
             raise HTTPException(status_code=500, detail="No audio data returned by the TTS server.")
 
+        # Save audio to a temporary file
         temp_audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
         with open(temp_audio_path, "wb") as f:
             f.write(base64.b64decode(audio_data))
 
         logger.info(f"TTS completed. Audio saved to {temp_audio_path}.")
         return FileResponse(temp_audio_path, media_type="audio/wav")
+
     except requests.RequestException as e:
         logger.error(f"Error performing TTS: {e}")
         raise HTTPException(status_code=500, detail="Error performing TTS. Please check your input and try again.")
+    except Exception as e:
+        logger.exception(f"Unexpected error in TTS endpoint: {e}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
 
 @app.post("/tts_stream")
@@ -86,6 +115,7 @@ async def tts_stream(data: dict):
         raise HTTPException(status_code=500, detail="Error streaming TTS. Please try again.")
 
 
+
 @app.get("/studio_speakers")
 async def studio_speakers():
     """Fetches studio speakers."""
@@ -94,6 +124,7 @@ async def studio_speakers():
         response = requests.get(STUDIO_SPEAKERS_API)
         response.raise_for_status()
         speakers = response.json()
+
         if not speakers:
             logger.warning("No studio speakers found.")
             return {"error": "No studio speakers available."}
