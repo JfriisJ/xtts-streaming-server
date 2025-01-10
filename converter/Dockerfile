@@ -1,26 +1,24 @@
-# Use a lightweight base image
-FROM python:3.10-slim
+FROM python:3.9-slim
 
-# Set environment variables
-ENV DEBIAN_FRONTEND=noninteractive
+# Set working directory
+WORKDIR /app
 
-# Install LibreOffice and Pandoc
+# Install required system packages
 RUN apt-get update && apt-get install -y \
     libreoffice \
     pandoc \
-    unzip \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Set the working directory
-WORKDIR /app
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy application files
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY converter.py ./
 
-# Expose port
+# Expose the uploads and outputs directories
+VOLUME /app/uploads
+VOLUME /app/outputs
+
+# Expose the port for Flask
 EXPOSE 5000
 
 # Run the application
-CMD ["python", "api.py"]
+CMD ["python", "converter.py"]

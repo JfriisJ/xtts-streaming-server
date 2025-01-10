@@ -1,44 +1,84 @@
-version: '3.8'
-
 services:
   frontend_api:
     build:
-      context: .
-      dockerfile: /frontend/Dockerfile
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       - "3009:3009"
     depends_on:
       - text_to_speech
       - text_extraction
+      - converter
+      - tts_server
     environment:
       - TTS_API=http://text_to_speech:8003/tts
-      - SPEAKER_API=http://text_to_speech:8003/speakers
+      - SPEAKER_API=http://text_to_speech:8003/studio_speakers
       - TEXT_EXTRACTION_API=http://text_extraction:8001/process
+      - CONVERTER_API=http://converter:5000/convert
     volumes:
       - frontend_logs:/app/logs
 
   text_to_speech:
     build:
-      context: .
-      dockerfile: /text_to_speech/Dockerfile
+      context: ./text_to_speech
+      dockerfile: Dockerfile
     ports:
       - "8003:8003"
+    depends_on:
+      - tts_server
     volumes:
       - tts_logs:/app/logs
 
   text_extraction:
     build:
-      context: .
-      dockerfile: /text_extraction/Dockerfile
+      context: ./text_extraction
+      dockerfile: Dockerfile
     ports:
       - "8001:8001"
+    depends_on:
+      - converter
     volumes:
       - text_extraction_logs:/app/logs
 
+  converter:
+    build:
+      context: ./converter
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - converter_uploads:/app/uploads
+      - converter_outputs:/app/outputs
+
+  tts_server:
+    image: xtts-stream
+    build:
+      context: ./tts_server
+      dockerfile: Dockerfile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    environment:
+      COQUI_TOS_AGREED: "1"  # Required by Coqui TTS
+    ports:
+      - "8000:80"
+    runtime: nvidia  # Enables GPU support with NVIDIA runtime
+    restart: unless-stopped
+    volumes:
+      - tts_server_models:/app/tts_models
+
 volumes:
+  tts_server_models:
+    driver: local
   frontend_logs:
     driver: local
   tts_logs:
     driver: local
   text_extraction_logs:
+    driver: local
+  converter_uploads:
+    driver: local
+  converter_outputs:
     driver: local
