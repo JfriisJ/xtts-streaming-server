@@ -7,8 +7,8 @@ import logging
 
 # Ensure the logs directory exists
 os.makedirs('/app/logs', exist_ok=True)
-TTS_API = os.getenv("TTS_API")
-TEXT_EXTRACTION_API = os.getenv("TEXT_EXTRACTION_API")
+TTS_API = os.getenv("TTS_API", "http://localhost:8003")
+TEXT_EXTRACTION_API = os.getenv("TEXT_EXTRACTION_API", "http://localhost:8001")
 
 # Set up logging
 logging.basicConfig(
@@ -27,23 +27,6 @@ TTS_HEALTH_API = f"{TTS_API}/health"
 EXTRACT_TEXT_API = f"{TEXT_EXTRACTION_API}/process"
 EXTRACT_TEXT_HEALTH_API = f"{TEXT_EXTRACTION_API}/health"
 
-#startup waiting for the backend to be ready
-def wait_for_service(service_url, retries=30, delay=10):
-    for i in range(retries):
-        try:
-            response = requests.get(service_url)
-            if response.status_code == 200:
-                logger.info(f"Service ready: {service_url}")
-                return True
-        except requests.exceptions.RequestException:
-            logger.warning(f"Service not ready: {service_url} (Attempt {i+1}/{retries})")
-        time.sleep(delay)
-    logger.error(f"Service not ready after {retries} attempts: {service_url}")
-    return False
-
-# Wait for TTS and text-extraction services
-if not wait_for_service(TTS_HEALTH_API) or not wait_for_service(EXTRACT_TEXT_HEALTH_API):
-    exit(1)
 
 
 # Fetch speaker options

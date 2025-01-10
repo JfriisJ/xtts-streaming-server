@@ -13,8 +13,8 @@ services:
       - converter
       - tts_server
     environment:
-      - TTS_API=http://localhost:8003
-      - TEXT_EXTRACTION_API=http://localhost:8001
+      - TTS_API=http://text_to_speech:8003
+      - TEXT_EXTRACTION_API=http://text_extraction:8001
     volumes:
       - frontend_logs:/app/logs
     healthcheck:
@@ -22,6 +22,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s
 
   text_to_speech:
     container_name: text-to-speech
@@ -32,7 +33,7 @@ services:
     ports:
       - "8003:8003"
     environment:
-        - TTS_SERVER=http://localhost:8000
+        - TTS_SERVER=http://tts_server:8000
     depends_on:
       - tts_server
     volumes:
@@ -42,9 +43,10 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s
 
   text_extraction:
-    container_name: text-extraction
+    container_name: text_extraction
     image: text-extraction
     build:
       context: ./text_extraction
@@ -52,7 +54,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-        - CONVERTER_API=localhost:5000
+        - CONVERTER_API=http://converter:5000
     depends_on:
       - converter
     volumes:
@@ -62,6 +64,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s
 
   converter:
     container_name: converter
@@ -79,6 +82,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s
 
   tts_server:
     container_name: xtts-stream
@@ -104,6 +108,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 120s
 
 volumes:
   tts_server_models:
