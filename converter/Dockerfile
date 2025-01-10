@@ -11,7 +11,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy application files
-COPY converter.py ./
+COPY converter.py requirements.txt ./
+
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Expose the uploads and outputs directories
 VOLUME /app/uploads

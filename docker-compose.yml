@@ -1,5 +1,7 @@
 services:
   frontend_api:
+    container_name: frontend-api
+    image: frontend-api
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -19,6 +21,8 @@ services:
       - frontend_logs:/app/logs
 
   text_to_speech:
+    container_name: text-to-speech
+    image: text-to-speech
     build:
       context: ./text_to_speech
       dockerfile: Dockerfile
@@ -30,6 +34,8 @@ services:
       - tts_logs:/app/logs
 
   text_extraction:
+    container_name: text-extraction
+    image: text-extraction
     build:
       context: ./text_extraction
       dockerfile: Dockerfile
@@ -41,6 +47,8 @@ services:
       - text_extraction_logs:/app/logs
 
   converter:
+    container_name: converter
+    image: converter
     build:
       context: ./converter
       dockerfile: Dockerfile
@@ -51,6 +59,7 @@ services:
       - converter_outputs:/app/outputs
 
   tts_server:
+    container_name: xtts-stream
     image: xtts-stream
     build:
       context: ./tts_server

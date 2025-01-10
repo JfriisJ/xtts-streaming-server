@@ -23,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # API Endpoints from main.py
-BASE_URL = "http://localhost:8002"
+BASE_URL = "http://localhost:8000"
 CLONE_SPEAKER_API = f"{BASE_URL}/clone_speaker"
 TTS_API = f"{BASE_URL}/tts"
 TTS_STREAM_API = f"{BASE_URL}/tts_stream"
