@@ -89,5 +89,5 @@ $ docker build -t xtts-stream . -f Dockerfile.cuda121
 $ docker run --gpus all -e COQUI_TOS_AGREED=1 --rm -p 8000:80 xtts-stream
 ```
 ```bash
-$python books_to_audio.py
+$python frontend_api.py
 ```

@@ -127,20 +127,30 @@ def predict_streaming_generator(parsed_input: dict = Body(...)):
     )
 
     for i, chunk in enumerate(chunks):
-        chunk = postprocess(chunk)
-        if i == 0 and add_wav_header:
-            yield encode_audio_common(b"", encode_base64=False)
-            yield chunk.tobytes()
-        else:
-            yield chunk.tobytes()
+        try:
+            print(f"Processing chunk {i}")
+            chunk = postprocess(chunk)
+            if i == 0 and add_wav_header:
+                yield encode_audio_common(b"", encode_base64=False)
+                yield chunk.tobytes()
+            else:
+                yield chunk.tobytes()
+        except Exception as e:
+            print(f"Error in streaming generator at chunk {i}: {e}")
+            break
 
 
 @app.post("/tts_stream")
 def predict_streaming_endpoint(parsed_input: StreamingInputs):
-    return StreamingResponse(
-        predict_streaming_generator(parsed_input),
-        media_type="audio/wav",
-    )
+    try:
+        return StreamingResponse(
+            predict_streaming_generator(parsed_input),
+            media_type="audio/wav",
+        )
+    except Exception as e:
+        print(f"Error in /tts_stream endpoint: {e}")
+        return {"error": "An error occurred while streaming audio."}
+
 
 class TTSInputs(BaseModel):
     speaker_embedding: List[float]

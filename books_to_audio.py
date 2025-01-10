@@ -91,6 +91,7 @@ def process_file(file):
 
     try:
         doc_structure = extract_odt_structure(file.name)
+        book_title = doc_structure.get("title", "Unknown Book")  # Default to "Unknown Book" if no title
         sections = doc_structure.get("sections", [])
         if not sections:
             print("No sections found in document.")
@@ -103,10 +104,11 @@ def process_file(file):
         dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
         initial_preview = flat_sections[0]["content"] if flat_sections else "No content available."
 
-        return dropdown_output, flat_sections, initial_preview
+        return dropdown_output, flat_sections, initial_preview, book_title
     except Exception as e:
         print(f"Error processing file: {e}")
-        return gr.update(choices=[], value=None), [], f"Error processing file: {e}"
+        return gr.update(choices=[], value=None), [], f"Error processing file: {e}", "Unknown Book"
+
 #-------------------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------------------
@@ -134,6 +136,18 @@ def extract_odt_structure(odt_file_path):
 
     try:
         with ZipFile(odt_file_path, 'r') as odt_zip:
+            book_title = "Unknown Book"  # Default title
+            if 'meta.xml' in odt_zip.namelist():
+                with odt_zip.open('meta.xml') as meta_file:
+                    meta_content = meta_file.read()
+                    meta_root = etree.fromstring(meta_content)
+                    namespaces = {
+                        'meta': 'urn:oasis:names:tc:opendocument:xmlns:meta:1.0',
+                        'dc': 'http://purl.org/dc/elements/1.1/'
+                    }
+                    title = meta_root.find('.//dc:title', namespaces)
+                    book_title = title.text.strip() if title is not None else "Unknown Book"
+
             # Extract and parse content.xml for headings and content
             if 'content.xml' in odt_zip.namelist():
                 with odt_zip.open('content.xml') as content_file:
@@ -160,8 +174,10 @@ def extract_odt_structure(odt_file_path):
                             last_heading = {"style": style, "title": full_text, "content": ""}
                             headings.append(last_heading)
 
-                            # Debug print
-                            print(f"Extracted heading: {last_heading}")
+                            # Use the first heading as the book title if meta.xml is unavailable
+                            if book_title == "Unknown Book" and style == "Title":
+                                book_title = full_text
+
                         elif tag == "p":  # Paragraph
                             # Collect content for the current heading
                             if last_heading is not None:
@@ -176,14 +192,15 @@ def extract_odt_structure(odt_file_path):
             else:
                 headings = []
 
-        return {"sections": headings}
+        print(f"Extracted book title: {book_title}")
+        return {"title": book_title, "sections": headings}
 
     except Exception as e:
         raise ValueError(f"Error extracting content from ODT file: {e}")
 
 
 #-------------------------------------------------------------------------------------------
-def generate_audio(selected_title, sections):
+def generate_audio(selected_title, sections, book_title):
     if not selected_title:
         print("No title selected for TTS.")
         return None
@@ -192,28 +209,38 @@ def generate_audio(selected_title, sections):
         print("No sections available for TTS.")
         return None
 
-    # Strip the style label from the title (e.g., "Title: APPLES to CIDER" -> "APPLES to CIDER")
-    clean_title = re.sub(r"^(Title|Heading \d+): ", "", selected_title)
-
     # Aggregate content for the selected title
     aggregated_content = get_aggregated_content(selected_title, sections)
     if not aggregated_content:
         print(f"No content found for section: {selected_title}")
         return None
 
-    # Generate audio using text_to_audio
+    # Create folder named after the book title
+    folder_name = clean_filename(book_title)
+    folder_path = os.path.join("demo_outputs", "generated_audios", folder_name)
+    os.makedirs(folder_path, exist_ok=True)
+
+    # Generate audio
     try:
-        print(f"Generating audio for: {clean_title}")
+        print(f"Generating audio for: {selected_title}")
         audio_path = text_to_audio(
             text=aggregated_content,
-            heading=clean_title,
+            heading=selected_title,
             lang="en",  # Default to English
             speaker_type="Studio",  # Default speaker type
             speaker_name_studio=list(STUDIO_SPEAKERS.keys())[0],  # Default studio speaker
             speaker_name_custom=None  # No custom speaker by default
         )
-        print(f"Audio generated at: {audio_path}")
-        return audio_path
+
+        # Move the audio to the folder
+        if audio_path:
+            new_audio_path = os.path.join(folder_path, os.path.basename(audio_path))
+            shutil.move(audio_path, new_audio_path)
+            print(f"Audio saved to: {new_audio_path}")
+            return new_audio_path
+        else:
+            print("Audio generation failed.")
+            return None
     except Exception as e:
         print(f"Error generating audio: {e}")
         return None
@@ -471,7 +498,7 @@ with gr.Blocks() as demo:
         file_input.change(
             process_file,
             inputs=[file_input],
-            outputs=[section_titles, sections_state, section_preview],
+            outputs=[section_titles, sections_state, section_preview, gr.State("Unknown Book")],
         )
 
         # Section Titles Dropdown Change Action
@@ -484,7 +511,7 @@ with gr.Blocks() as demo:
         # TTS Button Click Action
         tts_button.click(
             generate_audio,
-            inputs=[section_titles, sections_state],
+            inputs=[section_titles, sections_state, gr.State("Unknown Book")],
             outputs=[audio_output],
         )
 

@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  frontend_api:
+    build:
+      context: .
+      dockerfile: /frontend/Dockerfile
+    ports:
+      - "3009:3009"
+    depends_on:
+      - text_to_speech
+      - text_extraction
+    environment:
+      - TTS_API=http://text_to_speech:8003/tts
+      - SPEAKER_API=http://text_to_speech:8003/speakers
+      - TEXT_EXTRACTION_API=http://text_extraction:8001/process
+    volumes:
+      - frontend_logs:/app/logs
+
+  text_to_speech:
+    build:
+      context: .
+      dockerfile: /text_to_speech/Dockerfile
+    ports:
+      - "8003:8003"
+    volumes:
+      - tts_logs:/app/logs
+
+  text_extraction:
+    build:
+      context: .
+      dockerfile: /text_extraction/Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - text_extraction_logs:/app/logs
+
+volumes:
+  frontend_logs:
+    driver: local
+  tts_logs:
+    driver: local
+  text_extraction_logs:
+    driver: local
