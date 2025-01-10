@@ -1,25 +1,28 @@
-# Updated logging for text_extraction.py
+from fastapi import FastAPI, File, UploadFile, HTTPException
+import os
 import logging
-from flask import Flask, request, jsonify
 from zipfile import ZipFile
 from lxml import etree
-import os
 
 # Ensure the logs directory exists
 os.makedirs('/app/logs', exist_ok=True)
 
-# Initialize logging
+CONVERTER_API = os.getenv("CONVERTER_API")
+
+os.makedirs('/app/logs', exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("/app/logs/text_extraction.log"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler("/app/logs/text_extraction.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = FastAPI(
+    title="Text Extraction API",
+    description="Your API Description",
+    version="0.0.1",
+    docs_url="/",
+)
 
 # Extract ODT Structure
 def extract_odt_structure(odt_file_path):
@@ -104,26 +107,22 @@ def extract_odt_structure(odt_file_path):
         logger.error(f"Error extracting content from ODT file: {e}")
         raise ValueError(f"Error extracting content from ODT file: {e}")
 
-@app.route('/process', methods=['POST'])
-def process_file():
-    if 'file' not in request.files:
-        logger.warning("No file uploaded.")
-        return jsonify({"error": "No file uploaded"}), 400
 
-    file = request.files['file']
-    temp_file_path = os.path.join("/tmp", file.filename)
-    file.save(temp_file_path)
-
+@app.post("/process")
+async def process_file(file: UploadFile = File(...)):
+    """Processes an uploaded file to extract text."""
+    temp_file_path = f"/tmp/{file.filename}"
     try:
-        logger.debug(f"Processing file: {temp_file_path}")
+        with open(temp_file_path, "wb") as f:
+            f.write(await file.read())
+
+        logger.info(f"Processing file: {temp_file_path}")
         doc_structure = extract_odt_structure(temp_file_path)
-        os.remove(temp_file_path)
-        return jsonify(doc_structure), 200
+        return doc_structure
     except Exception as e:
         logger.error(f"Error processing file: {e}")
-        os.remove(temp_file_path)
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
-if __name__ == '__main__':
-    logger.info("Starting text extraction service on port 8001")
-    app.run(host="0.0.0.0", port=8001)

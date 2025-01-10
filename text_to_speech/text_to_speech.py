@@ -1,82 +1,71 @@
+from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 import requests
-from flask import Flask, request, jsonify, send_file, Response
 import os
 import tempfile
 import logging
 import base64
 
-# Ensure the logs directory exists
-os.makedirs('/app/logs', exist_ok=True)
-
-# Initialize Flask app
-app = Flask(__name__)
-
 # Setup logging
+os.makedirs('/app/logs', exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("/app/logs/text_to_speech.log"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler("/app/logs/text_to_speech.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-# API Endpoints from main.py
-BASE_URL = "http://localhost:8000"
-CLONE_SPEAKER_API = f"{BASE_URL}/clone_speaker"
-TTS_API = f"{BASE_URL}/tts"
-TTS_STREAM_API = f"{BASE_URL}/tts_stream"
-STUDIO_SPEAKERS_API = f"{BASE_URL}/studio_speakers"
-LANGUAGES_API = f"{BASE_URL}/languages"
+app = FastAPI(
+    title="Text To speech API",
+    description="Your API Description",
+    version="0.0.1",
+    docs_url="/",
+)
 
-@app.route('/clone_speaker', methods=['POST'])
-def clone_speaker():
-    """Clones a speaker using the /clone_speaker endpoint in main.py."""
-    file = request.files.get('wav_file')
-    if not file:
-        return jsonify({"error": "No audio file provided"}), 400
+TTS_SERVER = os.getenv("TTS_SERVER", "http://localhost:8000")
+CLONE_SPEAKER_API = f"{TTS_SERVER}/clone_speaker"
+TTS_API = f"{TTS_SERVER}/tts"
+TTS_STREAM_API = f"{TTS_SERVER}/tts_stream"
+STUDIO_SPEAKERS_API = f"{TTS_SERVER}/studio_speakers"
+LANGUAGES_API = f"{TTS_SERVER}/languages"
 
+
+@app.post("/clone_speaker")
+async def clone_speaker(wav_file: UploadFile):
+    """Clones a speaker using the /clone_speaker endpoint."""
     try:
-        files = {"wav_file": file.stream}
+        files = {"wav_file": ("file.wav", await wav_file.read())}
         response = requests.post(CLONE_SPEAKER_API, files=files)
         response.raise_for_status()
-        return response.json(), 200
-    except requests.exceptions.RequestException as e:
+        return response.json()
+    except requests.RequestException as e:
         logger.error(f"Error cloning speaker: {e}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/tts', methods=['POST'])
-def tts():
-    """Performs TTS using the /tts endpoint in main.py."""
-    data = request.json
-    if not data:
-        return jsonify({"error": "Invalid input"}), 400
 
+@app.post("/tts")
+async def tts(data: dict):
+    """Performs TTS using the /tts endpoint."""
     try:
         response = requests.post(TTS_API, json=data)
         response.raise_for_status()
         audio_data = response.json().get("audio")
         if not audio_data:
-            return jsonify({"error": "No audio data returned"}), 500
+            raise HTTPException(status_code=500, detail="No audio data returned")
 
-        # Save and return audio file
         temp_audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
         with open(temp_audio_path, "wb") as f:
             f.write(base64.b64decode(audio_data))
 
-        return send_file(temp_audio_path, mimetype="audio/wav", as_attachment=True)
-    except requests.exceptions.RequestException as e:
+        return FileResponse(temp_audio_path, media_type="audio/wav")
+    except requests.RequestException as e:
         logger.error(f"Error generating TTS: {e}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/tts_stream', methods=['POST'])
-def tts_stream():
-    """Streams TTS audio using the /tts_stream endpoint in main.py."""
-    data = request.json
-    if not data:
-        return jsonify({"error": "Invalid input"}), 400
 
+@app.post("/tts_stream")
+async def tts_stream(data: dict):
+    """Streams TTS audio using the /tts_stream endpoint."""
     try:
         def stream_audio():
             response = requests.post(TTS_STREAM_API, json=data, stream=True)
@@ -84,32 +73,31 @@ def tts_stream():
             for chunk in response.iter_content(chunk_size=4096):
                 yield chunk
 
-        return Response(stream_audio(), content_type="audio/wav")
-    except requests.exceptions.RequestException as e:
+        return StreamingResponse(stream_audio(), media_type="audio/wav")
+    except requests.RequestException as e:
         logger.error(f"Error streaming TTS: {e}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/studio_speakers', methods=['GET'])
-def studio_speakers():
-    """Fetches studio speakers using the /studio_speakers endpoint in main.py."""
+
+@app.get("/studio_speakers")
+async def studio_speakers():
+    """Fetches studio speakers."""
     try:
         response = requests.get(STUDIO_SPEAKERS_API)
         response.raise_for_status()
-        return response.json(), 200
-    except requests.exceptions.RequestException as e:
+        return JSONResponse(content=response.json())
+    except requests.RequestException as e:
         logger.error(f"Error fetching studio speakers: {e}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/languages', methods=['GET'])
-def languages():
-    """Fetches supported languages using the /languages endpoint in main.py."""
+
+@app.get("/languages")
+async def languages():
+    """Fetches supported languages."""
     try:
         response = requests.get(LANGUAGES_API)
         response.raise_for_status()
-        return response.json(), 200
-    except requests.exceptions.RequestException as e:
+        return JSONResponse(content=response.json())
+    except requests.RequestException as e:
         logger.error(f"Error fetching languages: {e}")
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8003)
+        raise HTTPException(status_code=500, detail=str(e))

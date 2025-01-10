@@ -1,10 +1,14 @@
 import os
+import time
+
 import requests
 import gradio as gr
 import logging
 
 # Ensure the logs directory exists
 os.makedirs('/app/logs', exist_ok=True)
+TTS_API = os.getenv("TTS_API")
+TEXT_EXTRACTION_API = os.getenv("TEXT_EXTRACTION_API")
 
 # Set up logging
 logging.basicConfig(
@@ -17,16 +21,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# API Endpoints
-TTS_API = 'http://text_to_speech:8003/tts'
-SPEAKER_API = 'http://text_to_speech:8003/speakers'
-TEXT_EXTRACTION_API = 'http://text_extraction:8001/process'
+TTS_SPEAKERS_API = f"{TTS_API}/studio_speakers"
+TTS_LANGUAGES_API = f"{TTS_API}/languages"
+EXTRACT_TEXT_API = f"{TEXT_EXTRACTION_API}/process"
+
+#startup waiting for the backend to be ready
+def wait_for_service(service_url, retries=30, delay=10):
+    for i in range(retries):
+        try:
+            response = requests.get(service_url)
+            if response.status_code == 200:
+                logger.info(f"Service ready: {service_url}")
+                return True
+        except requests.exceptions.RequestException:
+            logger.warning(f"Service not ready: {service_url} (Attempt {i+1}/{retries})")
+        time.sleep(delay)
+    logger.error(f"Service not ready after {retries} attempts: {service_url}")
+    return False
+
+# Wait for TTS and text-extraction services
+if not wait_for_service(TTS_LANGUAGES_API) or not wait_for_service(EXTRACT_TEXT_API):
+    exit(1)
+
 
 # Fetch speaker options
 def fetch_speakers():
     try:
         logger.info("Fetching speakers from API")
-        response = requests.get(SPEAKER_API)
+        response = requests.get(TTS_SPEAKERS_API)
         if response.status_code == 200:
             data = response.json()
             studio_speakers = data.get("studio_speakers", [])
@@ -48,7 +70,7 @@ def process_file(file):
 
     try:
         logger.info(f"Processing uploaded file: {file.name}")
-        response = requests.post(TEXT_EXTRACTION_API, files={'file': file})
+        response = requests.post(EXTRACT_TEXT_API, files={'file': file})
         if response.status_code == 200:
             data = response.json()
             sections = data.get('sections', [])

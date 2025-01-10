@@ -1,27 +1,27 @@
+# Use a lightweight Python image
 FROM python:3.9-slim
+
+# Install system dependencies for pandoc and libreoffice
+RUN apt-get update && apt-get install -y \
+    pandoc \
+    libreoffice \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Install required system packages
-RUN apt-get update && apt-get install -y \
-    libreoffice \
-    pandoc \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copy application files
 COPY converter.py requirements.txt ./
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Expose the uploads and outputs directories
-VOLUME /app/uploads
-VOLUME /app/outputs
+# Create necessary directories
+RUN mkdir -p /app/uploads /app/outputs /app/logs
 
-# Expose the port for Flask
+# Expose the application port
 EXPOSE 5000
 
-# Run the application
-CMD ["python", "converter.py"]
+# Run the FastAPI application
+CMD ["uvicorn", "converter:app", "--host", "0.0.0.0", "--port", "5000"]
