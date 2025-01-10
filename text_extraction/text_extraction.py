@@ -126,3 +126,7 @@ async def process_file(file: UploadFile = File(...)):
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for file conversion service."""
+    return {"status": "healthy"}

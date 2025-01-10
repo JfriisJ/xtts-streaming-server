@@ -101,3 +101,8 @@ async def languages():
     except requests.RequestException as e:
         logger.error(f"Error fetching languages: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for file conversion service."""
+    return {"status": "healthy"}

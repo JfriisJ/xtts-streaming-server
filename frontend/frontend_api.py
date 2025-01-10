@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 TTS_SPEAKERS_API = f"{TTS_API}/studio_speakers"
 TTS_LANGUAGES_API = f"{TTS_API}/languages"
+TTS_HEALTH_API = f"{TTS_API}/health"
 EXTRACT_TEXT_API = f"{TEXT_EXTRACTION_API}/process"
+EXTRACT_TEXT_HEALTH_API = f"{TEXT_EXTRACTION_API}/health"
 
 #startup waiting for the backend to be ready
 def wait_for_service(service_url, retries=30, delay=10):
@@ -40,7 +42,7 @@ def wait_for_service(service_url, retries=30, delay=10):
     return False
 
 # Wait for TTS and text-extraction services
-if not wait_for_service(TTS_LANGUAGES_API) or not wait_for_service(EXTRACT_TEXT_API):
+if not wait_for_service(TTS_HEALTH_API) or not wait_for_service(EXTRACT_TEXT_HEALTH_API):
     exit(1)
 
 
