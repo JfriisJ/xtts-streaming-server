@@ -1,19 +1,23 @@
 import os
 import time
-
-import requests
 import gradio as gr
 import logging
 
+import requests
+
+from text_service import extract_odt_structure
+from audio_service import generate_audio, fetch_languages_and_speakers, test_tts
+
 # Ensure the logs directory exists
 os.makedirs('/app/logs', exist_ok=True)
+
+# Environment variables
 TTS_API = os.getenv("TTS_API", "http://localhost:8003")
-TEXT_EXTRACTION_API = os.getenv("TEXT_EXTRACTION_API", "http://localhost:8001")
 
 # Set up logging
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - {%(pathname)s:%(lineno)d} - %(message)s',
     handlers=[
         logging.FileHandler("/app/logs/frontend_api.log"),
         logging.StreamHandler()
@@ -21,33 +25,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# API Endpoints
 TTS_SPEAKERS_API = f"{TTS_API}/studio_speakers"
 TTS_LANGUAGES_API = f"{TTS_API}/languages"
-TTS_HEALTH_API = f"{TTS_API}/health"
-EXTRACT_TEXT_API = f"{TEXT_EXTRACTION_API}/process"
-EXTRACT_TEXT_HEALTH_API = f"{TEXT_EXTRACTION_API}/health"
-
 
 
 # Fetch speaker options
 def fetch_speakers():
     try:
-        logger.info("Fetching speakers from API")
+        logger.info("Fetching speakers from API.")
         response = requests.get(TTS_SPEAKERS_API)
         if response.status_code == 200:
             data = response.json()
             studio_speakers = data.get("studio_speakers", [])
             cloned_speakers = data.get("cloned_speakers", [])
-            logger.info(f"Speakers fetched successfully: Studio - {studio_speakers}, Cloned - {cloned_speakers}")
+            logger.info(f"Speakers fetched successfully. Studio: {studio_speakers}, Cloned: {cloned_speakers}")
             return studio_speakers, cloned_speakers
         else:
-            logger.error(f"Failed to fetch speakers: {response.status_code} - {response.text}")
+            logger.error(f"Failed to fetch speakers. Status: {response.status_code}, Response: {response.text}")
             return [], []
+    except requests.ConnectionError as e:
+        logger.error(f"Connection error while fetching speakers: {e}")
+        return [], []
     except Exception as e:
-        logger.exception(f"Error while fetching speakers: {e}")
+        logger.exception(f"Unexpected error while fetching speakers: {e}")
         return [], []
 
-# Gradio Interface Functions
+
+# Process the uploaded file
 def process_file(file):
     if file is None:
         logger.warning("No file uploaded.")
@@ -55,70 +60,38 @@ def process_file(file):
 
     try:
         logger.info(f"Processing uploaded file: {file.name}")
-        response = requests.post(EXTRACT_TEXT_API, files={'file': file})
-        if response.status_code == 200:
-            data = response.json()
-            sections = data.get('sections', [])
-            book_title = data.get('title', "Unknown Book")
-            if not sections:
-                logger.warning("No sections found in the document.")
-                return gr.update(choices=[], value=None), [], "No sections found in the document."
+        extraction_result = extract_odt_structure(file.name)  # Use the local extraction service
+        book_title = extraction_result.get("title", "Unknown Book")
+        sections = extraction_result.get("sections", [])
 
-            section_titles = [sec["title"] for sec in sections]
-            logger.info(f"Sections extracted: {section_titles}")
-            dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
-            initial_preview = sections[0]["content"] if sections else "No content available."
-            return dropdown_output, sections, initial_preview, book_title
-        else:
-            logger.error(f"Error processing file: {response.status_code} - {response.text}")
-            return gr.update(choices=[], value=None), [], "Error processing file.", "Unknown Book"
+        if not sections:
+            logger.warning("No sections found in the document.")
+            return gr.update(choices=[], value=None), [], "No sections found in the document."
+
+        section_titles = [sec["title"] for sec in sections]
+        logger.info(f"Sections extracted: {section_titles}")
+        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
+        initial_preview = sections[0]["content"] if sections else "No content available."
+        return dropdown_output, sections, initial_preview, book_title
     except Exception as e:
         logger.exception(f"Error processing file: {e}")
         return gr.update(choices=[], value=None), [], f"Error processing file: {e}", "Unknown Book"
 
-def generate_audio(selected_title, sections, book_title, speaker_type, speaker_name, lang):
-    if not selected_title:
-        logger.warning("No title selected for TTS.")
-        return None
 
-    if not sections:
-        logger.warning("No sections available for TTS.")
-        return None
+def handle_tts_test(text, lang, speaker_type, speaker_name_studio, speaker_name_custom, stream):
+    if speaker_type == "Studio":
+        return test_tts(text, lang, "Studio", speaker_name_studio=speaker_name_studio, stream=stream)
+    else:
+        return test_tts(text, lang, "Cloned", speaker_name_custom=speaker_name_custom, stream=stream)
 
-    section_content = next((sec["content"] for sec in sections if sec["title"] == selected_title), None)
-    if not section_content:
-        logger.warning(f"No content found for section: {selected_title}")
-        return None
 
-    try:
-        payload = {
-            "text": section_content,
-            "title": selected_title,
-            "book_title": book_title,
-            "language": lang,
-            "speaker_type": speaker_type,
-            "speaker_name": speaker_name
-        }
-        logger.info(f"Sending TTS request with payload: {payload}")
-        response = requests.post(TTS_API, json=payload)
-        if response.status_code == 200:
-            audio_file = f"{selected_title.replace(' ', '_')}.wav"
-            with open(audio_file, "wb") as f:
-                f.write(response.content)
-            logger.info(f"Audio file generated: {audio_file}")
-            return audio_file
-        else:
-            logger.error(f"TTS API error: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        logger.exception(f"Error generating audio: {e}")
-        return None
+# Fetch languages and speakers
+try:
+    languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
+except Exception as e:
+    logger.error(f"Failed to initialize metadata: {e}")
+    languages, studio_speakers, cloned_speakers = [], [], []
 
-# Initialize speaker options
-logger.info("Initializing speaker options")
-studio_speakers, cloned_speakers = fetch_speakers()
-
-# Gradio Interface
 with gr.Blocks() as demo:
     sections_state = gr.State([])
 
@@ -145,7 +118,12 @@ with gr.Blocks() as demo:
                     choices=studio_speakers + cloned_speakers,
                     interactive=True
                 )
-                lang = gr.Dropdown(label="Language", choices=["en", "es", "fr"], value="en", interactive=True)
+                lang = gr.Dropdown(
+                    label="Language",
+                    choices=languages,
+                    value=languages[0] if languages else "en",
+                    interactive=True
+                )
 
         # File Input Change Action
         file_input.change(
@@ -164,9 +142,43 @@ with gr.Blocks() as demo:
 
         # TTS Button Click Action
         tts_button.click(
-            generate_audio,
+            lambda selected_title, sections, book_title, speaker_type, speaker_name, lang: generate_audio(
+                selected_title, sections, book_title, lang, speaker_type, speaker_name
+            ),
             inputs=[section_titles, sections_state, gr.State("Unknown Book"), speaker_type, speaker_name, lang],
             outputs=[audio_output],
         )
+
+    with gr.Tab("TTS Test"):
+        with gr.Row():
+            test_text = gr.Textbox(label="Test Text", lines=2, placeholder="Enter text for TTS testing")
+            test_lang = gr.Dropdown(label="Language", choices=languages, value=languages[0] if languages else "en")
+            test_speaker_type = gr.Radio(
+                label="Speaker Type",
+                choices=["Studio", "Cloned"],
+                value="Studio",
+                interactive=True
+            )
+            test_speaker_name_studio = gr.Dropdown(
+                label="Studio Speaker",
+                choices=studio_speakers,
+                visible=True,
+                interactive=True
+            )
+            test_speaker_name_custom = gr.Dropdown(
+                label="Cloned Speaker",
+                choices=cloned_speakers,
+                visible=False,
+                interactive=True
+            )
+            stream_option = gr.Checkbox(label="Stream TTS", value=False)
+            test_button = gr.Button("Test TTS")
+
+        test_button.click(
+            handle_tts_test,
+            inputs=[test_text, test_lang, test_speaker_type, test_speaker_name_studio, test_speaker_name_custom, stream_option],
+            outputs=[]
+        )
+
 
     demo.launch(share=False, debug=False, server_port=3009, server_name="localhost")

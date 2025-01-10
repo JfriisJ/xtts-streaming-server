@@ -3,7 +3,7 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Copy application files
-COPY frontend.py requirements.txt ./
+COPY frontend.py requirements.txt audio_service.py text_service.py ./
 
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt

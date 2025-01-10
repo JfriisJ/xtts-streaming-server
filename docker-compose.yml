@@ -33,13 +33,13 @@ services:
     ports:
       - "8003:8003"
     environment:
-        - TTS_SERVER=http://tts_server:8000
+        - TTS_SERVER=http://tts_server:80
     depends_on:
       - tts_server
     volumes:
       - tts_logs:/app/logs
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      test: ["CMD", "curl", "-f", "http://text_to_speech:8003/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -60,7 +60,7 @@ services:
     volumes:
       - text_extraction_logs:/app/logs
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "curl", "-f", "http://text_extraction:8001/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -78,7 +78,7 @@ services:
       - converter_uploads:/app/uploads
       - converter_outputs:/app/outputs
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://converter:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -90,11 +90,6 @@ services:
     build:
       context: ./tts_server
       dockerfile: Dockerfile
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities: [gpu]
     environment:
       COQUI_TOS_AGREED: "1"  # Required by Coqui TTS
     ports:
@@ -104,7 +99,7 @@ services:
     volumes:
       - tts_server_models:/app/tts_models
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://tts_server:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 5
