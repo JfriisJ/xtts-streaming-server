@@ -5,7 +5,7 @@ import logging
 
 import requests
 
-from audio_service import generate_audio, fetch_languages_and_speakers, clone_speaker
+from audio_service import generate_audio, fetch_languages_and_speakers
 from text_service import extract_odt_structure
 
 

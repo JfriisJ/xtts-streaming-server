@@ -3,7 +3,8 @@ import json
 import logging
 import os
 import re
-import tempfile
+import shutil
+import uuid
 from io import BytesIO
 import time
 
@@ -14,7 +15,6 @@ from tempfile import NamedTemporaryFile
 import requests
 from fastapi import FastAPI
 from pydub import AudioSegment
-
 
 
 # Setup logging
@@ -56,6 +56,17 @@ def robust_request(url, retries=3, delay=2):
             else:
                 raise e
 
+# Metadata Initialization
+LANGUAGES = []
+STUDIO_SPEAKERS = {}
+CLONED_SPEAKERS = {}
+if health_check().get("status") == "healthy":
+    try:
+        LANGUAGES = robust_request(f"{SERVER_URL}/languages").json()
+        STUDIO_SPEAKERS = robust_request(f"{SERVER_URL}/studio_speakers").json()
+    except Exception as e:
+        logger.error(f"Failed to fetch metadata: {e}")
+
 if health_check().get("status") == "healthy":
     try:
         print("Fetching metadata from server ...")
@@ -70,140 +81,125 @@ if health_check().get("status") == "healthy":
         LANGUAGES = []
 
 
+def generate_audio(selected_title, sections, book_title):
+    if not selected_title:
+        logger.warning("No title selected for TTS.")
+        return None
 
+    if not sections:
+        logger.warning("No sections available for TTS.")
+        return None
 
-def clone_speaker(upload_file, speaker_name):
-    """Clone a speaker using reference audio."""
-    try:
-        logger.info(f"Cloning speaker: {speaker_name}")
-        with open(upload_file, "rb") as audio_file:
-            files = {"wav_file": ("reference.wav", audio_file)}
-            embeddings = requests.post(f"{SERVER_URL}/clone_speaker", files=files).json()
-        output_path = os.path.join("demo_outputs", "cloned_speakers", f"{speaker_name}.json")
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "w") as fp:
-            json.dump(embeddings, fp)
-        logger.info(f"Speaker cloned successfully and saved to {output_path}.")
-        return output_path
-    except requests.RequestException as e:
-        logger.error(f"Error cloning speaker: {e}")
-        raise RuntimeError("Failed to clone speaker.")
-
-
-def generate_audio(selected_title, sections, book_title, lang="en", speaker_type="Studio", speaker_name=None):
-    """
-    Generate audio for a given section of a document, including the title and section content,
-    and keep the audio chunks in memory.
-    """
-    logger.info(f"Generating audio for section '{selected_title}' in book '{book_title}'")
-    if not selected_title or not sections:
-        raise ValueError("Invalid input: selected_title or sections is missing.")
-
-    # Aggregate content and prepend the title
+    # Aggregate content for the selected title
     aggregated_content = get_aggregated_content(selected_title, sections)
     if not aggregated_content:
-        raise ValueError(f"No content found for section: {selected_title}")
+        logger.warning(f"No content found for section: {selected_title}")
+        return None
 
-    full_content = f"{selected_title}\n\n{aggregated_content}"  # Prepend the title to the content
 
-    # Split the full content into manageable chunks
-    chunks = split_text_into_chunks(full_content)
-    logger.info(f"Text split into {len(chunks)} chunks for TTS processing.")
+    # Create folder named after the book title
+    folder_name = clean_filename(book_title)
+    folder_path = os.path.join("outputs", "generated_audios", folder_name)
+    os.makedirs(folder_path, exist_ok=True)
 
-    combined_audio = AudioSegment.empty()
-
+    # Generate audio
     try:
-        for idx, chunk in enumerate(chunks):
-            try:
-                logger.info(f"Processing chunk {idx + 1}/{len(chunks)}: {chunk[:30]}...")
-                audio_stream = text_to_audio_in_memory(
-                    text=chunk,
-                    lang=lang,
-                    speaker_type=speaker_type,
-                    speaker_name=speaker_name
-                )
-                chunk_audio = AudioSegment.from_file(audio_stream, format="wav")
-                combined_audio += chunk_audio + AudioSegment.silent(duration=500)  # Add silence padding
-            except Exception as e:
-                logger.error(f"Failed to process chunk {idx + 1}: {e}")
-
-        # Export the combined audio to memory
-        final_audio_io = BytesIO()
-        combined_audio.export(final_audio_io, format="wav")
-        final_audio_io.seek(0)
-
-        logger.info("Final combined audio generated successfully.")
-        return final_audio_io
-    except Exception as e:
-        logger.exception(f"Error generating audio in memory: {e}")
-        raise RuntimeError("Audio generation failed in memory.")
-
-
-def text_to_audio(text, lang, speaker_type, speaker_name, output_format="wav"):
-    """Generate audio using the TTS server."""
-    try:
-        embeddings = get_speaker_embeddings(speaker_type, speaker_name)
-        payload = {
-            "text": text,
-            "language": lang,
-            "speaker_embedding": embeddings.get("speaker_embedding"),
-            "gpt_cond_latent": embeddings.get("gpt_cond_latent"),
-        }
-
-        response = requests.post(f"{SERVER_URL}/tts", json=payload)
-        logger.debug(f"TTS server response content: {response.content[:1]}")
-
-        # Check for non-200 status codes
-        response.raise_for_status()
-
-        # Check if response is JSON or raw base64
-        try:
-            response_data = response.json()
-            base64_audio = response_data.get("audio")
-            if not base64_audio:
-                raise ValueError("No audio data in response.")
-        except json.JSONDecodeError:
-            logger.warning("Response is not JSON. Assuming raw base64 audio.")
-            base64_audio = response.content.strip(b'"')  # Handle raw base64-encoded data
-
-        # Decode base64 audio
-        try:
-            audio_data = base64.b64decode(base64_audio)
-        except base64.binascii.Error as e:
-            logger.error(f"Error decoding base64 audio: {e}")
-            raise RuntimeError("Failed to decode audio data.")
-
-        # Write audio to temporary file
-        output_path = os.path.join(
-            "demo_outputs", "generated_audios", f"{next(tempfile._get_candidate_names())}.{output_format}"
+        logger.info(f"Generating audio for: {selected_title}")
+        audio_path = text_to_audio(
+            text=aggregated_content,
+            heading=selected_title,
+            lang="en",  # Default to English
+            speaker_type="Studio",  # Default speaker type
+            speaker_name_studio=list(STUDIO_SPEAKERS.keys())[0] if STUDIO_SPEAKERS else None,
+            speaker_name_custom=None  # No custom speaker by default
         )
-        with open(output_path, "wb") as fp:
-            fp.write(audio_data)
 
-        logger.info(f"Audio saved at {output_path}")
-        return output_path
-
-    except requests.RequestException as e:
-        logger.error(f"Error during TTS generation: {e}")
-        raise RuntimeError("Failed to communicate with TTS server.")
+        # Move the audio to the folder
+        if audio_path:
+            new_audio_path = os.path.join(folder_path, os.path.basename(audio_path))
+            shutil.move(audio_path, new_audio_path)
+            logger.info(f"Audio saved to: {new_audio_path}")
+            return new_audio_path
+        else:
+            logger.error("Audio generation failed.")
+            return None
     except Exception as e:
-        logger.exception(f"Unexpected error during TTS generation: {e}")
-        raise RuntimeError("Audio generation failed.")
+        logger.exception(f"Error generating audio: {e}")
+        return None
+
+
+def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None,
+                  output_format="wav"):
+    """Generate audio using the TTS server."""
+    file_name = clean_filename(heading or "Untitled")
+
+    embeddings = STUDIO_SPEAKERS.get(speaker_name_studio, {}) if speaker_type == 'Studio' else CLONED_SPEAKERS.get(speaker_name_custom, {})
+    if not embeddings:
+        logger.error("Speaker embeddings not found.")
+        return None
+
+    chunks = split_text_into_chunks(heading + "\n" + text)
+
+    cache_dir = os.path.join("outputs", "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    cached_audio_paths = []
+    for idx, chunk in enumerate(chunks):
+        try:
+            response = requests.post(
+                SERVER_URL + "/tts",
+                json={
+                    "text": chunk,
+                    "language": lang,
+                    "speaker_embedding": embeddings.get("speaker_embedding"),
+                    "gpt_cond_latent": embeddings.get("gpt_cond_latent")
+                }
+            )
+            if response.status_code != 200:
+                logger.warning(f"TTS server returned status {response.status_code} for chunk: {chunk}")
+                continue
+
+            decoded_audio = base64.b64decode(response.content)
+            audio_path = os.path.join(cache_dir, f"{file_name}_{idx + 1}.wav")
+            with open(audio_path, "wb") as fp:
+                fp.write(decoded_audio)
+                cached_audio_paths.append(audio_path)
+        except Exception as e:
+            logger.error(f"Error processing chunk {idx + 1}: {e}")
+
+    if cached_audio_paths:
+        combined_audio_path = concatenate_audios(cached_audio_paths, output_format)
+        final_path = os.path.join("outputs", "generated_audios", f"{file_name}_{uuid.uuid4().hex}.{output_format}")
+        shutil.move(combined_audio_path, final_path)
+        shutil.rmtree(cache_dir)
+        return final_path
+    else:
+        logger.error("No audio chunks were successfully generated.")
+        return None
+
+def get_aggregated_content(selected_title, sections, include_subsections=True):
+    aggregated_content = []
+
+    def collect_content(section, include, depth=0):
+        if section.get("title") == selected_title:
+            include = True
+            logger.debug(f"Matched section: '{section['title']}' (Style: {section.get('style', 'Unknown Style')})")
+
+        if include:
+            aggregated_content.append(section.get("content", ""))
+
+        # Only recurse into subsections if include_subsections is True
+        if include_subsections:
+            for subsection in section.get("subsections", []):
+                collect_content(subsection, include, depth + 1)
+
+    for section in sections:
+        collect_content(section, include=False)
+
+    return "\n\n".join(filter(None, aggregated_content))
 
 
 def concatenate_audios(audio_paths, title, output_format="wav", output_name="combined_audio"):
-    """
-    Combine the title audio and multiple audio files into a single file with optional silence padding.
-
-    Args:
-        audio_paths (list): List of audio file paths to combine.
-        title (str): Title to include as the first part of the audio.
-        output_format (str): Output file format (default is "wav").
-        output_name (str): Name of the combined output file (default is "combined_audio").
-
-    Returns:
-        str: Path to the combined audio file.
-    """
     logger.debug(f"Combining title and {len(audio_paths)} audio files...")
 
     combined = AudioSegment.empty()
@@ -212,10 +208,6 @@ def concatenate_audios(audio_paths, title, output_format="wav", output_name="com
     # Generate a temporary audio file for the title
     title_audio_path = generate_title_audio(title, output_format="wav")
     logger.debug(f"Generated title audio at {title_audio_path}")
-
-    # Add title audio to the combined audio
-    title_audio = AudioSegment.from_file(title_audio_path)
-    combined += title_audio + silence
 
     # Add section audios to the combined audio
     for path in audio_paths:
@@ -233,10 +225,6 @@ def concatenate_audios(audio_paths, title, output_format="wav", output_name="com
 
     return output_path
 
-
-
-
-
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
     sentences = sent_tokenize(text)  # Better sentence splitting
     chunks = []
@@ -249,11 +237,23 @@ def split_text_into_chunks(text, max_chars=250, max_tokens=350):
             current_chunk += sentence + " "
             current_tokens += sentence_tokens
         else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence + " "
-            current_tokens = sentence_tokens
-
+            if len(sentence) > max_chars or sentence_tokens > max_tokens:
+                sentence_parts = [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
+                for part in sentence_parts:
+                    part_tokens = len(part) // 4
+                    if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
+                        current_chunk += part + " "
+                        current_tokens += part_tokens
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk.strip())
+                        current_chunk = part + " "
+                        current_tokens = part_tokens
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence + " "
+                current_tokens = sentence_tokens
     if current_chunk:
         chunks.append(current_chunk.strip())
 
@@ -288,17 +288,6 @@ def fetch_languages_and_speakers():
 def clean_filename(filename):
     clean_name = re.sub(r'[<>:"/\\|?*]', "_", filename).strip()
     return clean_name or "default_filename"
-
-
-def get_aggregated_content(selected_title, sections):
-    """Aggregate content for a given section, including its subsections."""
-    content = []
-    for section in sections:
-        if section["title"] == selected_title:
-            content.append(section.get("content", ""))
-    return "\n".join(content)
-
-
 
 
 def generate_title_audio(title, lang="en", speaker_type="Studio", speaker_name=None, output_format="wav"):
