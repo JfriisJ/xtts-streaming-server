@@ -158,7 +158,9 @@ async def languages():
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint for TTS service."""
-    logger.info("Health check passed.")
-    return {"status": "healthy"}
+def health():
+    try:
+        # Add any specific service checks here
+        return {"status": "healthy"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}

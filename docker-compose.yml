@@ -7,15 +7,6 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3009:3009"
-    depends_on:
-      tts_server:
-        condition: service_healthy
-      text_to_speech:
-        condition: service_healthy
-      text_extraction:
-        condition: service_healthy
-      converter:
-        condition: service_healthy
     environment:
       - TTS_API=http://text_to_speech:8003
       - TEXT_EXTRACTION_API=http://text_extraction:8001
@@ -39,9 +30,6 @@ services:
       - "8003:8003"
     environment:
         - TTS_SERVER=http://tts_server:80
-    depends_on:
-      tts_server:
-        condition: service_healthy
     volumes:
       - tts_logs:/app/logs
     networks:

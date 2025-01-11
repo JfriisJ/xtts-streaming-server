@@ -245,7 +245,25 @@ def generate_audio(selected_title, sections, book_title):
         print(f"Error generating audio: {e}")
         return None
 
+def get_aggregated_content(selected_title, sections, include_subsections=True):
+    aggregated_content = []
 
+    def collect_content(section, include, depth=0):
+        indent = "  " * depth
+        if section.get("title") == selected_title:
+            include = True
+            print(f"{indent}*** Matched section: '{section['title']}' (Style: {section.get('style', 'Unknown Style')})")
+
+        if include:
+            aggregated_content.append(section.get("content", ""))
+
+        for subsection in section.get("subsections", []):
+            collect_content(subsection, include, depth + 1)
+
+    for section in sections:
+        collect_content(section, include=False)
+
+    return "\n\n".join(filter(None, aggregated_content))
 
 def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None,
                   output_format="wav"):
@@ -436,25 +454,7 @@ def build_hierarchy(sections):
     return hierarchy
 
 
-def get_aggregated_content(selected_title, sections, include_subsections=True):
-    aggregated_content = []
 
-    def collect_content(section, include, depth=0):
-        indent = "  " * depth
-        if section.get("title") == selected_title:
-            include = True
-            print(f"{indent}*** Matched section: '{section['title']}' (Style: {section.get('style', 'Unknown Style')})")
-
-        if include:
-            aggregated_content.append(section.get("content", ""))
-
-        for subsection in section.get("subsections", []):
-            collect_content(subsection, include, depth + 1)
-
-    for section in sections:
-        collect_content(section, include=False)
-
-    return "\n\n".join(filter(None, aggregated_content))
 
 
 def display_section(selected_title, sections):

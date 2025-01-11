@@ -195,6 +195,9 @@ def get_languages():
     return config.languages
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint for file conversion service."""
-    return {"status": "healthy"}
+def health():
+    try:
+        # Add any specific service checks here
+        return {"status": "healthy"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}

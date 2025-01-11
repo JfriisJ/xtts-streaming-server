@@ -32,6 +32,25 @@ except Exception as e:
     logger.error(f"Failed to initialize metadata: {e}")
     languages, studio_speakers, cloned_speakers = [], {}, {}
 
+
+def check_service_health():
+    services = {
+        "Audio Service": "http://localhost:8003/health",
+        "Text Service": "http://localhost:8000/health",
+    }
+    status = {}
+    for service, url in services.items():
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200 and response.json().get("status") == "healthy":
+                status[service] = "Connected"
+            else:
+                status[service] = "Disconnected"
+        except Exception:
+            status[service] = "Disconnected"
+    return status
+
+
 # Process the uploaded ODT file
 def process_file(file):
     if file is None:
@@ -57,12 +76,19 @@ def process_file(file):
         logger.exception(f"Error processing file: {e}")
         return gr.update(choices=[], value=None), [], f"Error processing file: {e}", "Unknown Book"
 
+def update_service_status():
+    statuses = check_service_health()
+    return "\n".join([f"{service}: {status}" for service, status in statuses.items()])
+
 
 # Frontend with Gradio
 with gr.Blocks() as demo:
     # States for managing sections and cloned speakers
     sections_state = gr.State([])
     cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
+    # Periodically update the status
+    connection_status = gr.Textbox(label="Service Status", value="Checking...", interactive=False)
+    gr.update(fn=update_service_status, inputs=[], outputs=[connection_status], every=5000)  # Poll every 5 seconds
 
     with gr.Row():
         file_input = gr.File(label="Upload ODT File", file_types=[".odt"])

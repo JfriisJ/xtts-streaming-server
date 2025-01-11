@@ -1,3 +1,5 @@
 requests
 gradio
 lxml
+nltk
+fastapi
