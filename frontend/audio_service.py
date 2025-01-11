@@ -31,6 +31,15 @@ try:
 except Exception as e:
     raise Exception(f"Error fetching metadata: {e}")
 
+try:
+    with open("default_speaker.json", "r") as fp:
+        warmup_speaker = json.load(fp)
+        if not ("speaker_embedding" in warmup_speaker and "gpt_cond_latent" in warmup_speaker):
+            raise ValueError("Invalid default_speaker.json structure.")
+except Exception as e:
+    logger.error(f"Failed to load default_speaker.json: {e}")
+
+
 # Initialize cloned speakers (starts empty)
 CLONED_SPEAKERS = {}
 
@@ -89,7 +98,7 @@ def generate_audio(selected_title, sections, book_title, lang="en", speaker_type
     audio_paths = []
     try:
         for idx, chunk in enumerate(chunks):
-            logger.info(f"Processing chunk {idx + 1}/{len(chunks)}: {chunk[:50]}...")
+            logger.info(f"Processing chunk {idx + 1}/{len(chunks)}: {chunk[:5]}...")
             audio_path = text_to_audio(
                 text=chunk,
                 lang=lang,
@@ -125,30 +134,46 @@ def text_to_audio(text, lang, speaker_type, speaker_name, output_format="wav"):
             "speaker_embedding": embeddings.get("speaker_embedding"),
             "gpt_cond_latent": embeddings.get("gpt_cond_latent"),
         }
-        response = requests.post(f"{SERVER_URL}/tts", json=payload, timeout=30)
+
+        response = requests.post(f"{SERVER_URL}/tts", json=payload)
+        logger.debug(f"TTS server response content: {response.content[:1]}")
+
+        # Check for non-200 status codes
         response.raise_for_status()
 
+        # Check if response is JSON or raw base64
         try:
             response_data = response.json()
-        except ValueError:
-            logger.error(f"Non-JSON response from TTS server: {response.content}")
-            raise RuntimeError("Invalid response from TTS server.")
+            base64_audio = response_data.get("audio")
+            if not base64_audio:
+                raise ValueError("No audio data in response.")
+        except json.JSONDecodeError:
+            logger.warning("Response is not JSON. Assuming raw base64 audio.")
+            base64_audio = response.content.strip(b'"')  # Handle raw base64-encoded data
 
-        if "audio" not in response_data:
-            logger.error(f"Missing 'audio' in TTS response: {response_data}")
-            raise RuntimeError("Invalid TTS server response: 'audio' key missing.")
+        # Decode base64 audio
+        try:
+            audio_data = base64.b64decode(base64_audio)
+        except base64.binascii.Error as e:
+            logger.error(f"Error decoding base64 audio: {e}")
+            raise RuntimeError("Failed to decode audio data.")
 
-        audio_data = base64.b64decode(response_data["audio"])
+        # Write audio to temporary file
         output_path = os.path.join(
             "demo_outputs", "generated_audios", f"{next(tempfile._get_candidate_names())}.{output_format}"
         )
         with open(output_path, "wb") as fp:
             fp.write(audio_data)
-        return output_path
-    except requests.RequestException as e:
-        logger.error(f"Request error during TTS generation: {e}")
-        raise RuntimeError("TTS generation failed.")
 
+        logger.info(f"Audio saved at {output_path}")
+        return output_path
+
+    except requests.RequestException as e:
+        logger.error(f"Error during TTS generation: {e}")
+        raise RuntimeError("Failed to communicate with TTS server.")
+    except Exception as e:
+        logger.exception(f"Unexpected error during TTS generation: {e}")
+        raise RuntimeError("Audio generation failed.")
 
 
 def concatenate_audios(audio_paths, title, output_format="wav", output_name="combined_audio"):
@@ -229,14 +254,15 @@ def split_text_into_chunks(text, max_chars=250, max_tokens=350):
 
 
 def get_speaker_embeddings(speaker_type, speaker_name):
-    """Get speaker embeddings based on type and name."""
     url = f"{SERVER_URL}/studio_speakers" if speaker_type == "Studio" else f"{SERVER_URL}/cloned_speakers"
     response = requests.get(url)
     response.raise_for_status()
     speakers = response.json()
     if speaker_name not in speakers:
+        logger.warning(f"Speaker '{speaker_name}' not found. Available speakers: {list(speakers.keys())}")
         raise ValueError(f"Speaker '{speaker_name}' not found.")
     return speakers[speaker_name]
+
 
 def fetch_languages_and_speakers():
     """Fetch available languages and speakers from the TTS server."""
@@ -265,32 +291,32 @@ def get_aggregated_content(selected_title, sections):
     return "\n".join(content)
 
 
-def generate_title_audio(title, lang="en", speaker_type="Studio", speaker_name="default_speaker", output_format="wav"):
-    """
-    Generate a temporary audio file for the title using TTS.
-
-    Args:
-        title (str): Title text to generate audio for.
-        lang (str): Language for the TTS.
-        speaker_type (str): Speaker type ("Studio" or "Cloned").
-        speaker_name (str): Speaker name to use for TTS.
-        output_format (str): Audio format for the output file.
-
-    Returns:
-        str: Path to the generated title audio file.
-    """
+def generate_title_audio(title, lang="en", speaker_type="Studio", speaker_name=None, output_format="wav"):
     logger.info(f"Generating audio for title: {title}")
+    try:
+        # Fetch speakers if no speaker_name is provided
+        if not speaker_name:
+            response = requests.get(f"{SERVER_URL}/studio_speakers")
+            response.raise_for_status()
+            studio_speakers = response.json()
+            if not studio_speakers:
+                raise RuntimeError("No studio speakers available.")
+            speaker_name = list(studio_speakers.keys())[0]  # Use the first available speaker
+            logger.info(f"Falling back to speaker: {speaker_name}")
 
-    # Fetch embeddings for the speaker
-    embeddings = get_speaker_embeddings(speaker_type, speaker_name)
+        # Fetch embeddings for the chosen speaker
+        embeddings = get_speaker_embeddings(speaker_type, speaker_name)
 
-    # Payload for the TTS request
-    payload = {
-        "text": title,
-        "language": lang,
-        "speaker_embedding": embeddings.get("speaker_embedding"),
-        "gpt_cond_latent": embeddings.get("gpt_cond_latent"),
-    }
+        # Payload for the TTS request
+        payload = {
+            "text": title,
+            "language": lang,
+            "speaker_embedding": embeddings.get("speaker_embedding"),
+            "gpt_cond_latent": embeddings.get("gpt_cond_latent"),
+        }
+    except Exception as e:
+        logger.error(f"Error in generate_title_audio: {e}")
+        raise
 
     try:
         response = requests.post(f"{SERVER_URL}/tts", json=payload)
