@@ -1,17 +1,14 @@
 import base64
-import json
 import logging
 import os
 import re
 import shutil
 import uuid
-from io import BytesIO
 import time
 
 import nltk
 nltk.download('punkt_tab', quiet=True)
 from nltk.tokenize import sent_tokenize
-from tempfile import NamedTemporaryFile
 import requests
 from fastapi import FastAPI
 from pydub import AudioSegment
@@ -26,17 +23,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Base server URL for TTS processing
-SERVER_URL = os.getenv("TTS_API", "http://localhost:8003")
+AUDIO_SERVICE_API = os.getenv("TTS_API", "http://localhost:8003")
 
 app = FastAPI()
 # Initialize cached speakers and languages
+OUTPUT = "./outputs"
+os.makedirs(os.path.join(OUTPUT, "cloned_speakers"), exist_ok=True)
+os.makedirs(os.path.join(OUTPUT, "generated_audios"), exist_ok=True)
 
+print("Preparing file structure...")
+if not os.path.exists(OUTPUT):
+    os.mkdir(OUTPUT)
+    os.mkdir(os.path.join(OUTPUT, "cloned_speakers"))
+    os.mkdir(os.path.join(OUTPUT, "generated_audios"))
 
 @app.get("/health")
 def health_check():
     try:
         # Example check: Ensure TTS server is reachable
-        response = requests.get(f"{SERVER_URL}/languages", timeout=5)
+        response = requests.get(f"{AUDIO_SERVICE_API}/health", timeout=5)
         if response.status_code == 200:
             return {"status": "healthy"}
         else:
@@ -56,23 +61,20 @@ def robust_request(url, retries=3, delay=2):
             else:
                 raise e
 
-# Metadata Initialization
-LANGUAGES = []
-STUDIO_SPEAKERS = {}
-CLONED_SPEAKERS = {}
+
 if health_check().get("status") == "healthy":
     try:
-        LANGUAGES = robust_request(f"{SERVER_URL}/languages").json()
-        STUDIO_SPEAKERS = robust_request(f"{SERVER_URL}/studio_speakers").json()
+        LANGUAGES = robust_request(f"{AUDIO_SERVICE_API}/languages").json()
+        STUDIO_SPEAKERS = robust_request(f"{AUDIO_SERVICE_API}/studio_speakers").json()
     except Exception as e:
         logger.error(f"Failed to fetch metadata: {e}")
 
 if health_check().get("status") == "healthy":
     try:
         print("Fetching metadata from server ...")
-        LANGUAGES = robust_request(f"{SERVER_URL}/languages").json()
+        LANGUAGES = robust_request(f"{AUDIO_SERVICE_API}/languages").json()
         print("Available languages:", ", ".join(LANGUAGES))
-        STUDIO_SPEAKERS = robust_request(f"{SERVER_URL}/studio_speakers").json()
+        STUDIO_SPEAKERS = robust_request(f"{AUDIO_SERVICE_API}/studio_speakers").json()
         print("Available studio speakers:", ", ".join(STUDIO_SPEAKERS.keys()))
     except Exception as e:
         logger.error(f"Failed to fetch metadata: {e}")
@@ -81,7 +83,7 @@ if health_check().get("status") == "healthy":
         LANGUAGES = []
 
 
-def generate_audio(selected_title, sections, book_title):
+def generate_audio(selected_title, sections, book_title, lang="en", speaker_type="Studio", speaker_name_studio=None):
     if not selected_title:
         logger.warning("No title selected for TTS.")
         return None
@@ -106,12 +108,13 @@ def generate_audio(selected_title, sections, book_title):
     try:
         logger.info(f"Generating audio for: {selected_title}")
         audio_path = text_to_audio(
+            title=book_title,
             text=aggregated_content,
             heading=selected_title,
-            lang="en",  # Default to English
-            speaker_type="Studio",  # Default speaker type
-            speaker_name_studio=list(STUDIO_SPEAKERS.keys())[0] if STUDIO_SPEAKERS else None,
-            speaker_name_custom=None  # No custom speaker by default
+            lang=lang,  # Default to English
+            speaker_type=speaker_type,  # Default speaker type
+            speaker_name_studio=speaker_name_studio,
+            output_format="wav"  # Default to WAV format
         )
 
         # Move the audio to the folder
@@ -128,17 +131,16 @@ def generate_audio(selected_title, sections, book_title):
         return None
 
 
-def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None,
-                  output_format="wav"):
+def text_to_audio(title, text, heading, lang, speaker_type, speaker_name_studio=None, output_format="wav"):
     """Generate audio using the TTS server."""
     file_name = clean_filename(heading or "Untitled")
 
-    embeddings = STUDIO_SPEAKERS.get(speaker_name_studio, {}) if speaker_type == 'Studio' else CLONED_SPEAKERS.get(speaker_name_custom, {})
+    embeddings = STUDIO_SPEAKERS.get(speaker_name_studio, {})
     if not embeddings:
         logger.error("Speaker embeddings not found.")
         return None
 
-    chunks = split_text_into_chunks(heading + "\n" + text)
+    chunks = split_text_into_chunks(heading + "\n\n" + text)
 
     cache_dir = os.path.join("outputs", "cache")
     os.makedirs(cache_dir, exist_ok=True)
@@ -147,7 +149,7 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
     for idx, chunk in enumerate(chunks):
         try:
             response = requests.post(
-                SERVER_URL + "/tts",
+                AUDIO_SERVICE_API + "/tts",
                 json={
                     "text": chunk,
                     "language": lang,
@@ -168,7 +170,7 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
             logger.error(f"Error processing chunk {idx + 1}: {e}")
 
     if cached_audio_paths:
-        combined_audio_path = concatenate_audios(cached_audio_paths, output_format)
+        combined_audio_path = concatenate_audios(cached_audio_paths, title, output_format)
         final_path = os.path.join("outputs", "generated_audios", f"{file_name}_{uuid.uuid4().hex}.{output_format}")
         shutil.move(combined_audio_path, final_path)
         shutil.rmtree(cache_dir)
@@ -199,15 +201,12 @@ def get_aggregated_content(selected_title, sections, include_subsections=True):
     return "\n\n".join(filter(None, aggregated_content))
 
 
-def concatenate_audios(audio_paths, title, output_format="wav", output_name="combined_audio"):
+def concatenate_audios(audio_paths, title, output_format="wav"):
     logger.debug(f"Combining title and {len(audio_paths)} audio files...")
 
+    # Initialize combined audio and silence
     combined = AudioSegment.empty()
     silence = AudioSegment.silent(duration=500)  # Optional: Add 500ms silence between title and sections
-
-    # Generate a temporary audio file for the title
-    title_audio_path = generate_title_audio(title, output_format="wav")
-    logger.debug(f"Generated title audio at {title_audio_path}")
 
     # Add section audios to the combined audio
     for path in audio_paths:
@@ -216,31 +215,36 @@ def concatenate_audios(audio_paths, title, output_format="wav", output_name="com
         combined += audio + silence
 
     # Export the final combined audio
-    output_path = os.path.join("demo_outputs", "generated_audios", f"{output_name}.{output_format}")
+    output_path = os.path.join("outputs", "generated_audios", f"{title}.{output_format}")
     combined.export(output_path, format=output_format)
     logger.debug(f"Combined audio saved to: {output_path}")
 
-    # Clean up the temporary title audio file
-    os.remove(title_audio_path)
-
     return output_path
 
+
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
+    from transformers import GPT2TokenizerFast
+
+    # Initialize tokenizer (adjust as needed for your language model)
+    tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
     sentences = sent_tokenize(text)  # Better sentence splitting
     chunks = []
     current_chunk = ""
     current_tokens = 0
 
     for sentence in sentences:
-        sentence_tokens = len(sentence) // 4  # Approximate token count
+        # Estimate tokens for the sentence using the tokenizer
+        sentence_tokens = len(tokenizer.encode(sentence, add_special_tokens=False))
+
         if len(current_chunk) + len(sentence) <= max_chars and current_tokens + sentence_tokens <= max_tokens:
             current_chunk += sentence + " "
             current_tokens += sentence_tokens
         else:
+            # If the sentence exceeds the limit, split it into smaller pieces
             if len(sentence) > max_chars or sentence_tokens > max_tokens:
                 sentence_parts = [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
                 for part in sentence_parts:
-                    part_tokens = len(part) // 4
+                    part_tokens = len(tokenizer.encode(part, add_special_tokens=False))
                     if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
                         current_chunk += part + " "
                         current_tokens += part_tokens
@@ -250,82 +254,37 @@ def split_text_into_chunks(text, max_chars=250, max_tokens=350):
                         current_chunk = part + " "
                         current_tokens = part_tokens
             else:
+                # Add the current chunk to the list and start a new chunk
                 if current_chunk:
                     chunks.append(current_chunk.strip())
                 current_chunk = sentence + " "
                 current_tokens = sentence_tokens
+
+    # Append the last chunk if it's non-empty
     if current_chunk:
         chunks.append(current_chunk.strip())
 
-    logger.debug(f"Split text into {len(chunks)} chunks")
+    # Debugging output
+    logger.debug(f"Split text into {len(chunks)} chunks: {[chunk[:50] for chunk in chunks]}")
+
     return chunks
-
-
-def get_speaker_embeddings(speaker_type, speaker_name):
-    url = f"{SERVER_URL}/studio_speakers" if speaker_type == "Studio" else f"{SERVER_URL}/cloned_speakers"
-    response = requests.get(url)
-    response.raise_for_status()
-    speakers = response.json()
-    if speaker_name not in speakers:
-        logger.warning(f"Speaker '{speaker_name}' not found. Available speakers: {list(speakers.keys())}")
-        raise ValueError(f"Speaker '{speaker_name}' not found.")
-    return speakers[speaker_name]
 
 
 def fetch_languages_and_speakers():
     """Fetch available languages and speakers from the TTS server."""
     try:
         logger.info("Fetching languages and speakers.")
-        languages = requests.get(f"{SERVER_URL}/languages").json()
-        studio_speakers = requests.get(f"{SERVER_URL}/studio_speakers").json()
+        languages = requests.get(f"{AUDIO_SERVICE_API}/languages").json()
+        studio_speakers = requests.get(f"{AUDIO_SERVICE_API}/studio_speakers").json()
         cloned_speakers = {}  # Initialize empty cloned speakers if not fetched
         return languages, studio_speakers, cloned_speakers
     except Exception as e:
         logger.error(f"Error fetching metadata: {e}")
-        return [], {}, {}
+        return {}, {}, {}
 
 
 def clean_filename(filename):
-    clean_name = re.sub(r'[<>:"/\\|?*]', "_", filename).strip()
+    clean_name = re.sub(r'[<>:"/\\|?*\n\r]', "_", filename).strip()
     return clean_name or "default_filename"
 
 
-def generate_title_audio(title, lang="en", speaker_type="Studio", speaker_name=None, output_format="wav"):
-    try:
-        embeddings = get_speaker_embeddings(speaker_type, speaker_name)
-        payload = {
-            "text": title,
-            "language": lang,
-            "speaker_embedding": embeddings.get("speaker_embedding"),
-            "gpt_cond_latent": embeddings.get("gpt_cond_latent"),
-        }
-        response = requests.post(f"{SERVER_URL}/tts", json=payload)
-        response.raise_for_status()
-        audio_data = base64.b64decode(response.content)
-
-        with NamedTemporaryFile(delete=False, suffix=f".{output_format}") as temp_audio:
-            temp_audio.write(audio_data)
-            temp_audio_path = temp_audio.name
-
-        logger.info(f"Title audio generated at {temp_audio_path}")
-        return temp_audio_path
-    except Exception as e:
-        logger.error(f"Error generating title audio: {e}")
-        raise RuntimeError("Failed to generate title audio.")
-
-
-
-def text_to_audio_in_memory(text, lang, speaker_type, speaker_name):
-    """Generate audio and return it in memory as a byte array."""
-    embeddings = get_speaker_embeddings(speaker_type, speaker_name)
-    payload = {
-        "text": text,
-        "language": lang,
-        "speaker_embedding": embeddings.get("speaker_embedding"),
-        "gpt_cond_latent": embeddings.get("gpt_cond_latent"),
-    }
-
-    response = requests.post(f"{SERVER_URL}/tts", json=payload)
-    response.raise_for_status()
-    audio_data = base64.b64decode(response.content)
-    return BytesIO(audio_data)

@@ -10,6 +10,7 @@ services:
     environment:
       - TTS_API=http://text_to_speech:8003
       - TEXT_EXTRACTION_API=http://text_extraction:8001
+      - CONVERTER_API=http://converter:5000
     volumes:
       - frontend_logs:/app/logs
     networks:

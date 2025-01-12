@@ -1,5 +1,9 @@
 import logging
+import os
 from zipfile import ZipFile
+
+import requests
+from fastapi import FastAPI
 from lxml import etree
 import re
 
@@ -10,6 +14,20 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+CONVERTER_API = os.getenv("CONVERTER_API", "http://localhost:5000")
+app = FastAPI()
+@app.get("/health")
+def health_check():
+    try:
+        # Example check: Ensure TTS server is reachable
+        response = requests.get(f"{CONVERTER_API}/health", timeout=5)
+        if response.status_code == 200:
+            return {"status": "healthy"}
+        else:
+            return {"status": "unhealthy", "error": "TTS server unreachable"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
 
 def get_full_text(element):
     """Recursively extract text from an XML element and its children."""

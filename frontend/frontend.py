@@ -1,150 +1,157 @@
 import os
-import time
-import gradio as gr
 import logging
+import time
 
+import gradio as gr
 import requests
 
-from audio_service import generate_audio, fetch_languages_and_speakers
-from text_service import extract_odt_structure
+from audio_service import generate_audio, fetch_languages_and_speakers, health_check as audio_health_check
+from text_service import extract_odt_structure, health_check as text_health_check
 
-
-
-# Ensure the logs directory exists
+# Logging configuration
 os.makedirs('/app/logs', exist_ok=True)
 
-# Set up logging
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - {%(pathname)s:%(lineno)d} - %(message)s',
-    handlers=[
-        logging.FileHandler("/app/logs/frontend_api.log"),
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler("/app/logs/frontend_api.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-# Fetch initial metadata
-try:
-    logger.info("Fetching metadata from TTS server...")
-    languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
-except Exception as e:
-    logger.error(f"Failed to initialize metadata: {e}")
-    languages, studio_speakers, cloned_speakers = [], {}, {}
 
 
 def check_service_health():
     services = {
-        "Audio Service": "http://localhost:8003/health",
-        "Text Service": "http://localhost:8000/health",
+        "Audio Service": audio_health_check,
+        "Text Service": text_health_check
+        # Add similar health checks for other services if defined
+        # For example: "Text Service": text_health_check
     }
     status = {}
-    for service, url in services.items():
+    for service_name, health_function in services.items():
         try:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200 and response.json().get("status") == "healthy":
-                status[service] = "Connected"
+            response = health_function()
+            if response.get("status") == "healthy":
+                status[service_name] = "Connected"
             else:
-                status[service] = "Disconnected"
-        except Exception:
-            status[service] = "Disconnected"
+                status[service_name] = f"Disconnected ({response.get('error', 'Unknown Error')})"
+        except Exception as e:
+            logger.warning(f"Service {service_name} health check failed: {e}")
+            status[service_name] = "Disconnected"
     return status
 
+# Function to get the connection status
+def update_connection_status():
+    status = check_service_health()
+    all_connected = all(value == "Connected" for value in status.values())
+    if all_connected:
+        return "All Services Connected"
+    else:
+        return "\n".join([f"{k}: {v}" for k, v in status.items()])
 
-# Process the uploaded ODT file
+# Fetch metadata after verifying service connection
+def fetch_metadata_if_connected(retries=5, delay=5):
+    for _ in range(retries):
+        try:
+            if all(status == "Connected" for status in check_service_health().values()):
+                languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
+
+                # Sanitize languages for dropdown
+                languages = [str(lang) for lang in languages]
+                logger.debug(f"Fetched languages for dropdown: {languages}")
+                logger.debug(f"Fetched studio speakers: {list(studio_speakers.keys())[:5]}")
+                logger.debug(f"Fetched cloned speakers: {list(cloned_speakers.keys())[:5]}")
+
+                return languages, studio_speakers, cloned_speakers
+        except Exception as e:
+            logger.warning(f"Retrying metadata fetch: {e}")
+            time.sleep(delay)
+
+    logger.error("Failed to fetch metadata after retries.")
+    return ["en"], {}, {}  # Fallback to English as default language
+
+# Initial metadata setup
+languages, studio_speakers, cloned_speakers = fetch_metadata_if_connected()
+
+# File processing handler
 def process_file(file):
-    if file is None:
-        logger.warning("No file uploaded.")
-        return gr.update(choices=[], value=None), [], "No file uploaded."
+    if not file:
+        return "No file uploaded.", gr.update(choices=[]), None, "", ""
 
     try:
-        logger.info(f"Processing uploaded file: {file.name}")
-        extraction_result = extract_odt_structure(file.name)  # Extract document structure
-        book_title = extraction_result.get("title", file.name)
-        sections = extraction_result.get("sections", [])
+        logger.info(f"Processing file: {file.name}")
+        result = extract_odt_structure(file.name)  # Process the ODT file
+        title = result.get("title", file.name)
+        sections = result.get("sections", [])
+        section_titles = [section["title"] for section in sections]
 
-        if not sections:
-            logger.warning("No sections found in the document.")
-            return gr.update(choices=[], value=None), [], "No sections found in the document."
+        logger.debug(f"Extracted sections: {sections[:5]}")  # Log extracted sections for debugging
 
-        section_titles = [sec["title"] for sec in sections]
-        logger.info(f"Sections extracted: {section_titles}")
-        dropdown_output = gr.update(choices=section_titles, value=section_titles[0] if section_titles else None)
-        initial_preview = sections[0]["content"] if sections else "No content available."
-        return dropdown_output, sections, initial_preview, book_title
+        # Return the title to be displayed in the book_title textbox
+        return title, gr.update(choices=section_titles), sections, section_titles[0] if section_titles else "", title
     except Exception as e:
-        logger.exception(f"Error processing file: {e}")
-        return gr.update(choices=[], value=None), [], f"Error processing file: {e}", "Unknown Book"
-
-def update_service_status():
-    statuses = check_service_health()
-    return "\n".join([f"{service}: {status}" for service, status in statuses.items()])
+        logger.error(f"Error processing file: {e}")
+        return f"Error: {e}", gr.update(choices=[]), None, "", ""
 
 
-# Frontend with Gradio
+
+# Section content preview
+def preview_section(selected_title, sections):
+    if not sections:  # Handle None or empty sections
+        logger.warning("No sections available to preview.")
+        return "No sections available to preview."
+
+    logger.debug(f"Selected title: {selected_title}")
+    logger.debug(f"Available sections: {[section['title'] for section in sections]}")
+
+    for section in sections:
+        if section["title"] == selected_title:
+            logger.debug(f"Found content for section '{selected_title}': {section['content'][:5]}")  # Log first 100 chars
+            return section["content"]
+
+    logger.warning(f"No content found for section '{selected_title}'.")
+    return "No content available."
+
+# Frontend interface
 with gr.Blocks() as demo:
-    # States for managing sections and cloned speakers
     sections_state = gr.State([])
-    cloned_speaker_names = gr.State(list(cloned_speakers.keys()))
-    # Periodically update the status
+    # Connection status Textbox
     connection_status = gr.Textbox(label="Service Status", value="Checking...", interactive=False)
-    gr.update(fn=update_service_status, inputs=[], outputs=[connection_status], every=5000)  # Poll every 5 seconds
 
+    # Timer component for periodic updates
+    timer = gr.Timer(value=5)
+
+    # Set up the tick event to update the connection status
+    timer.tick(update_connection_status, inputs=[], outputs=[connection_status])  # Corrected here
+
+    # Inputs
     with gr.Row():
         file_input = gr.File(label="Upload ODT File", file_types=[".odt"])
         speaker_type = gr.Radio(label="Speaker Type", choices=["Studio", "Cloned"], value="Studio")
-        speaker_name_studio = gr.Dropdown(
-            label="Studio Speaker",
-            choices=list(studio_speakers.keys()),
-            value=list(studio_speakers.keys())[0] if studio_speakers else None,
-        )
-        speaker_name_custom = gr.Dropdown(
-            label="Cloned speaker",
-            choices=cloned_speaker_names.value,
-            value=cloned_speaker_names.value[0] if len(cloned_speaker_names.value) != 0 else None,
-        )
-        lang = gr.Dropdown(label="Language", choices=languages, value="en")
+        studio_dropdown = gr.Dropdown(label="Studio Speaker", choices=list(studio_speakers.keys()))
+        lang_dropdown = gr.Dropdown(label="Language", choices=languages, value="en")
 
-    # Process ODT Tab
-    with gr.Tab("Process ODT"):
+
+    # File processing and preview
+    with gr.Row():
         with gr.Column():
-            process_button = gr.Button("Process File")
-            book_title = gr.Textbox(label="Book Title", value="Unknown Book", interactive=False)
-            section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True, value=None)
-            section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
-            tts_button = gr.Button("Generate Audio")
-            audio_output = gr.Audio(label="Generated Audio", interactive=False)
+            process_btn = gr.Button("Process File")
+            book_title = gr.Textbox(label="Book Title", value="")
+            section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True)
+        section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
 
-    # Define Actions
-    # 1. Process File
-    file_input.change(
-        fn=process_file,
-        inputs=[file_input],
-        outputs=[section_titles, sections_state, section_preview, book_title],
-    )
+    # TTS generation
+    tts_button = gr.Button("Generate Audio")
+    audio_output = gr.Audio(label="Generated Audio")
 
-    # 2. Update Section Preview on Title Selection
-    section_titles.change(
-        fn=lambda selected_title, sections: next(
-            (sec["content"] for sec in sections if sec["title"] == selected_title), "No content available."
-        ),
-        inputs=[section_titles, sections_state],
-        outputs=[section_preview],
-    )
-
-    # 3. Generate Audio
+    # Interactivity
+    file_input.change( process_file, inputs=[file_input], outputs=[book_title, section_titles, sections_state, section_preview])
+    section_titles.change(preview_section, inputs=[section_titles, sections_state], outputs=[section_preview])
+    process_btn.click(process_file, inputs=[file_input], outputs=[book_title, section_titles, sections_state, section_preview])
     tts_button.click(
-        fn=lambda selected_title, sections, speaker_type, studio_speaker, custom_speaker, lang: generate_audio(
-            selected_title=selected_title,
-            sections=sections,
-            book_title=book_title.value,
-            lang=lang,
-            speaker_type=speaker_type,
-            speaker_name=studio_speaker if speaker_type == "Studio" else custom_speaker,
-        ),
-        inputs=[section_titles, sections_state, speaker_type, speaker_name_studio, speaker_name_custom, lang],
+        generate_audio,
+        inputs=[section_titles, sections_state, book_title, lang_dropdown, speaker_type, studio_dropdown],
         outputs=[audio_output],
     )
 
     demo.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")
-
