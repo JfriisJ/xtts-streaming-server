@@ -16,7 +16,7 @@ RUN python -m pip install --no-cache-dir nltk && \
     python -m nltk.downloader -d /usr/share/nltk_data punkt
 
 # Copy application files
-COPY frontend.py requirements.txt audio_service.py text_service.py ./
+COPY frontend.py requirements.txt audio_service.py text_service.py health_service.py ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt

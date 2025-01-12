@@ -8,9 +8,10 @@ services:
     ports:
       - "3009:3009"
     environment:
-      - TTS_API=http://text_to_speech:8003
-      - TEXT_EXTRACTION_API=http://text_extraction:8001
+      - AUDIO_SERVICE_API=http://text_to_speech:8003
+      - TEXT_SERVICE_API=http://text_extraction:8001
       - CONVERTER_API=http://converter:5000
+      - XTTS_SERVER_API=http://tts_server:80
     volumes:
       - frontend_logs:/app/logs
     networks:

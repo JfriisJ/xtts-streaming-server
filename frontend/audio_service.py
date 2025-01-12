@@ -10,9 +10,9 @@ import nltk
 nltk.download('punkt_tab', quiet=True)
 from nltk.tokenize import sent_tokenize
 import requests
-from fastapi import FastAPI
 from pydub import AudioSegment
 
+from health_service import AUDIO_SERVICE_API
 
 # Setup logging
 logging.basicConfig(
@@ -22,10 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Base server URL for TTS processing
-AUDIO_SERVICE_API = os.getenv("TTS_API", "http://localhost:8003")
-
-app = FastAPI()
 # Initialize cached speakers and languages
 OUTPUT = "./outputs"
 os.makedirs(os.path.join(OUTPUT, "cloned_speakers"), exist_ok=True)
@@ -37,17 +33,7 @@ if not os.path.exists(OUTPUT):
     os.mkdir(os.path.join(OUTPUT, "cloned_speakers"))
     os.mkdir(os.path.join(OUTPUT, "generated_audios"))
 
-@app.get("/health")
-def health_check():
-    try:
-        # Example check: Ensure TTS server is reachable
-        response = requests.get(f"{AUDIO_SERVICE_API}/health", timeout=5)
-        if response.status_code == 200:
-            return {"status": "healthy"}
-        else:
-            return {"status": "unhealthy", "error": "TTS server unreachable"}
-    except Exception as e:
-        return {"status": "unhealthy", "error": str(e)}
+
 
 def robust_request(url, retries=3, delay=2):
     for i in range(retries):
@@ -61,15 +47,8 @@ def robust_request(url, retries=3, delay=2):
             else:
                 raise e
 
-
-if health_check().get("status") == "healthy":
-    try:
-        LANGUAGES = robust_request(f"{AUDIO_SERVICE_API}/languages").json()
-        STUDIO_SPEAKERS = robust_request(f"{AUDIO_SERVICE_API}/studio_speakers").json()
-    except Exception as e:
-        logger.error(f"Failed to fetch metadata: {e}")
-
-if health_check().get("status") == "healthy":
+from health_service import check_service_health
+if check_service_health == "healthy":
     try:
         print("Fetching metadata from server ...")
         LANGUAGES = robust_request(f"{AUDIO_SERVICE_API}/languages").json()

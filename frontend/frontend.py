@@ -3,10 +3,10 @@ import logging
 import time
 
 import gradio as gr
-import requests
 
-from audio_service import generate_audio, fetch_languages_and_speakers, health_check as audio_health_check
-from text_service import extract_odt_structure, health_check as text_health_check
+from audio_service import generate_audio, fetch_languages_and_speakers
+from health_service import check_service_health
+from text_service import extract_text_from_file
 
 # Logging configuration
 os.makedirs('/app/logs', exist_ok=True)
@@ -18,36 +18,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-
-def check_service_health():
-    services = {
-        "Audio Service": audio_health_check,
-        "Text Service": text_health_check
-        # Add similar health checks for other services if defined
-        # For example: "Text Service": text_health_check
-    }
-    status = {}
-    for service_name, health_function in services.items():
-        try:
-            response = health_function()
-            if response.get("status") == "healthy":
-                status[service_name] = "Connected"
-            else:
-                status[service_name] = f"Disconnected ({response.get('error', 'Unknown Error')})"
-        except Exception as e:
-            logger.warning(f"Service {service_name} health check failed: {e}")
-            status[service_name] = "Disconnected"
-    return status
-
 # Function to get the connection status
 def update_connection_status():
-    status = check_service_health()
-    all_connected = all(value == "Connected" for value in status.values())
+    status = check_service_health()  # Call the health check function
+    all_connected = all(service["status"] == "Connected" for service in status.values())
+
     if all_connected:
         return "All Services Connected"
     else:
-        return "\n".join([f"{k}: {v}" for k, v in status.items()])
+        # Create a status summary for disconnected services
+        status_summary = []
+        for service_name, service_status in status.items():
+            if service_status["status"] != "Connected":
+                error_detail = service_status.get("error", "Unknown Error")
+                status_summary.append(f"{service_name}: {service_status['status']} ({error_detail})")
+        return "\n".join(status_summary)
 
 # Fetch metadata after verifying service connection
 def fetch_metadata_if_connected(retries=5, delay=5):
@@ -80,7 +65,7 @@ def process_file(file):
 
     try:
         logger.info(f"Processing file: {file.name}")
-        result = extract_odt_structure(file.name)  # Process the ODT file
+        result = extract_text_from_file(file.name)  # Process the ODT file
         title = result.get("title", file.name)
         sections = result.get("sections", [])
         section_titles = [section["title"] for section in sections]
@@ -148,10 +133,6 @@ with gr.Blocks() as demo:
     file_input.change( process_file, inputs=[file_input], outputs=[book_title, section_titles, sections_state, section_preview])
     section_titles.change(preview_section, inputs=[section_titles, sections_state], outputs=[section_preview])
     process_btn.click(process_file, inputs=[file_input], outputs=[book_title, section_titles, sections_state, section_preview])
-    tts_button.click(
-        generate_audio,
-        inputs=[section_titles, sections_state, book_title, lang_dropdown, speaker_type, studio_dropdown],
-        outputs=[audio_output],
-    )
+    tts_button.click( generate_audio, inputs=[section_titles, sections_state, book_title, lang_dropdown, speaker_type, studio_dropdown], outputs=[audio_output])
 
     demo.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")
