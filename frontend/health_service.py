@@ -10,7 +10,7 @@ TEXT_SERVICE_API = os.getenv("TEXT_SERVICE_API", "http://localhost:8001")
 
 # Setup logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler()]
 )

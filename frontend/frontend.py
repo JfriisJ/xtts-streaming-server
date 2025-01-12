@@ -1,10 +1,10 @@
+import json
 import os
 import logging
-import time
 
 import gradio as gr
 
-from audio_service import generate_audio, fetch_languages_and_speakers
+from audio_service import generate_audio, LANGUAGES, STUDIO_SPEAKERS, clone_speaker, CLONED_SPEAKERS
 from health_service import check_service_health
 from text_service import extract_text_from_file
 
@@ -34,29 +34,6 @@ def update_connection_status():
                 status_summary.append(f"{service_name}: {service_status['status']} ({error_detail})")
         return "\n".join(status_summary)
 
-# Fetch metadata after verifying service connection
-def fetch_metadata_if_connected(retries=5, delay=5):
-    for _ in range(retries):
-        try:
-            if all(status == "Connected" for status in check_service_health().values()):
-                languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
-
-                # Sanitize languages for dropdown
-                languages = [str(lang) for lang in languages]
-                logger.debug(f"Fetched languages for dropdown: {languages}")
-                logger.debug(f"Fetched studio speakers: {list(studio_speakers.keys())[:5]}")
-                logger.debug(f"Fetched cloned speakers: {list(cloned_speakers.keys())[:5]}")
-
-                return languages, studio_speakers, cloned_speakers
-        except Exception as e:
-            logger.warning(f"Retrying metadata fetch: {e}")
-            time.sleep(delay)
-
-    logger.error("Failed to fetch metadata after retries.")
-    return ["en"], {}, {}  # Fallback to English as default language
-
-# Initial metadata setup
-languages, studio_speakers, cloned_speakers = fetch_metadata_if_connected()
 
 # File processing handler
 def process_file(file):
@@ -65,15 +42,24 @@ def process_file(file):
 
     try:
         logger.info(f"Processing file: {file.name}")
-        result = extract_text_from_file(file.name)  # Process the ODT file
+        result = extract_text_from_file(file.name)  # Send file to text_service
+
+        # Extract title and sections
         title = result.get("title", file.name)
         sections = result.get("sections", [])
         section_titles = [section["title"] for section in sections]
 
-        logger.debug(f"Extracted sections: {sections[:5]}")  # Log extracted sections for debugging
+        logger.debug(f"Extracted title: {title}")
+        logger.debug(f"Extracted sections: {sections[:5]}")  # Log first few sections for clarity
 
-        # Return the title to be displayed in the book_title textbox
-        return title, gr.update(choices=section_titles), sections, section_titles[0] if section_titles else "", title
+        # Update UI components
+        return (
+            title,
+            gr.update(choices=section_titles),
+            sections,
+            section_titles[0],
+            json.dumps(result, indent=2)  # Display full JSON response in a new field
+        )
     except Exception as e:
         logger.error(f"Error processing file: {e}")
         return f"Error: {e}", gr.update(choices=[]), None, "", ""
@@ -97,6 +83,17 @@ def preview_section(selected_title, sections):
     logger.warning(f"No content found for section '{selected_title}'.")
     return "No content available."
 
+def studio_speaker_change(speaker_type):
+    if speaker_type == "Studio":
+        return STUDIO_SPEAKERS.keys(),"Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None
+    return CLONED_SPEAKERS.value, CLONED_SPEAKERS.value[0] if len(CLONED_SPEAKERS.value) != 0 else None,
+
+def speaker_type_change(speaker_type):
+    if speaker_type == "Studio":
+        return [generated_audio], [book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type]
+    return [clone_speaker], [upload_file, clone_speaker_name, cloned_speaker_names]
+
+
 # Frontend interface
 with gr.Blocks() as demo:
     sections_state = gr.State([])
@@ -108,31 +105,73 @@ with gr.Blocks() as demo:
 
     # Set up the tick event to update the connection status
     timer.tick(update_connection_status, inputs=[], outputs=[connection_status])  # Corrected here
+    cloned_speaker_names = gr.State(list(CLONED_SPEAKERS.keys()))
+    # Update the UI with JSON viewer
+    with gr.Tab("TTS"):
+        with gr.Row():
+            file_input = gr.File(label="Upload ODT File", file_types=[".odt"])
+            speaker_type = gr.Radio(
+                label="Speaker Type",
+                choices=["Studio", "Cloned"],
+                value="Studio"
+            )
+            studio_dropdown = gr.Dropdown(
+                label="Studio speaker",
+                choices=studio_speaker_change(speaker_type.value)[0],
+                value=studio_speaker_change(speaker_type.value)[1]
+            )
+            lang_dropdown = gr.Dropdown(
+                label="Language",
+                choices=LANGUAGES,
+                value="en"
+            )
 
-    # Inputs
-    with gr.Row():
-        file_input = gr.File(label="Upload ODT File", file_types=[".odt"])
-        speaker_type = gr.Radio(label="Speaker Type", choices=["Studio", "Cloned"], value="Studio")
-        studio_dropdown = gr.Dropdown(label="Studio Speaker", choices=list(studio_speakers.keys()))
-        lang_dropdown = gr.Dropdown(label="Language", choices=languages, value="en")
+        # File processing and preview
+        with gr.Row():
+            with gr.Column():
+                process_btn = gr.Button("Process File")
+                book_title = gr.Textbox(label="Book Title", value="")
+                section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True)
+                # json_display = gr.Textbox(label="Full JSON Output", lines=20, interactive=False)  # New field for JSON
+            section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
+        # TTS generation
+        tts_button = gr.Button("Generate Audio")
+        generated_audio = gr.Audio(label="Generated audio", autoplay=True)
+
+    with gr.Tab("Clone a new speaker"):
+        with gr.Row():
+            upload_file = gr.Audio(label="Upload reference audio", type="filepath")
+            with gr.Column():
+                clone_speaker_name = gr.Textbox(label="Speaker name", value="default_speaker")
+                clone_button = gr.Button(value="Clone speaker")
+                speaker_name_custom = gr.Dropdown(
+                    label="Cloned speaker",
+                    choices=cloned_speaker_names.value,
+                    value=cloned_speaker_names.value[0] if len(cloned_speaker_names.value) != 0 else None,
+                )
 
 
-    # File processing and preview
-    with gr.Row():
-        with gr.Column():
-            process_btn = gr.Button("Process File")
-            book_title = gr.Textbox(label="Book Title", value="")
-            section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True)
-        section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
-
-    # TTS generation
-    tts_button = gr.Button("Generate Audio")
-    audio_output = gr.Audio(label="Generated Audio")
 
     # Interactivity
-    file_input.change( process_file, inputs=[file_input], outputs=[book_title, section_titles, sections_state, section_preview])
+    file_input.change(
+        process_file,
+        inputs=[file_input],
+        outputs=[book_title, section_titles, sections_state, section_preview]
+    )
     section_titles.change(preview_section, inputs=[section_titles, sections_state], outputs=[section_preview])
-    process_btn.click(process_file, inputs=[file_input], outputs=[book_title, section_titles, sections_state, section_preview])
-    tts_button.click( generate_audio, inputs=[section_titles, sections_state, book_title, lang_dropdown, speaker_type, studio_dropdown], outputs=[audio_output])
+    process_btn.click(
+        process_file,
+        inputs=[file_input],
+        outputs=[book_title, section_titles, sections_state, section_preview])
+    tts_button.click(
+        generate_audio,
+        inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type],
+        outputs=[generated_audio]
+    )
+    clone_button.click(
+        fn=clone_speaker,
+        inputs=[upload_file, clone_speaker_name, cloned_speaker_names],
+        outputs=[upload_file, clone_speaker_name, cloned_speaker_names, speaker_name_custom],
+    )
 
     demo.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")
