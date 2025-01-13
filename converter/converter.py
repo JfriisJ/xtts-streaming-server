@@ -31,78 +31,75 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 def parse_markdown_to_json(markdown_content):
     """
-    Parse a Markdown string into a JSON structure based on heading levels.
-    Handles headings, paragraphs, and code blocks, and removes unwanted elements.
+    Parse Markdown content into structured JSON with hierarchical levels.
+    - The first line is the Title.
+    - `#` defines top-level sections.
+    - `##` defines mid-level sections.
+    - `###` defines lowest-level sections (subsections).
     """
-    lines = markdown_content.split("\n")
-    json_data = {
-        "Title": [],
-        "Heading 1": [],
-        "Heading 2": [],
-        "Heading 3": [],
-        "Heading 4": [],
-        "Heading 5": [],
-        "Code": []
-    }
+    lines = markdown_content.strip().split("\n")
+    if not lines:
+        return {"Title": "", "Sections": []}
+
+    # Use the first line as the Title
+    title = lines[0].strip("# ").strip()
+    json_data = {"Title": title, "Sections": []}
     current_section = None
+    current_subsection = None
 
-    code_block_active = False  # To track whether we're inside a code block
-    code_block_buffer = []
-
-    for line in lines:
+    for line in lines[1:]:
         stripped_line = line.strip()
 
-        # Handle code blocks
-        if stripped_line.startswith("```"):
-            if not code_block_active:
-                # Start of a code block
-                code_block_active = True
-                code_block_buffer = []
-            else:
-                # End of a code block
-                code_block_active = False
-                json_data["Code"].append("\n".join(code_block_buffer))
+        # Skip empty lines and horizontal rules
+        if not stripped_line or stripped_line == "---":
             continue
 
-        if code_block_active:
-            # Accumulate code block lines
-            code_block_buffer.append(stripped_line)
-            continue
-
-        # Remove horizontal lines and empty lines
-        if stripped_line == "---" or not stripped_line:
-            continue
-
-        # Normalize inline Markdown syntax
-        stripped_line = re.sub(r"\*\*(.*?)\*\*", r"\1", stripped_line)  # Remove bold (**)
-        stripped_line = re.sub(r"\*(.*?)\*", r"\1", stripped_line)  # Remove italics (*)
-
-        # Categorize headings
+        # Handle `#` as top-level sections
         if stripped_line.startswith("# "):
-            current_section = "Title"
-            json_data["Title"].append(stripped_line[2:])
-        elif stripped_line.startswith("## "):
-            current_section = "Heading 1"
-            json_data["Heading 1"].append(stripped_line[3:])
-        elif stripped_line.startswith("### "):
-            current_section = "Heading 2"
-            json_data["Heading 2"].append(stripped_line[4:])
-        elif stripped_line.startswith("#### "):
-            current_section = "Heading 3"
-            json_data["Heading 3"].append(stripped_line[5:])
-        elif stripped_line.startswith("##### "):
-            current_section = "Heading 4"
-            json_data["Heading 4"].append(stripped_line[6:])
-        elif stripped_line.startswith("###### "):
-            current_section = "Heading 5"
-            json_data["Heading 5"].append(stripped_line[7:])
-        else:
-            # Add remaining content to the current section
             if current_section:
-                json_data[current_section].append(stripped_line)
+                if current_subsection:
+                    current_section["Subsections"].append(current_subsection)
+                    current_subsection = None
+                json_data["Sections"].append(current_section)
+            current_section = {"Heading": stripped_line[2:].strip(), "Content": "", "Subsections": []}
 
-    # Filter out empty categories
-    return {k: v for k, v in json_data.items() if v}
+        # Handle `##` as mid-level sections
+        elif stripped_line.startswith("## "):
+            if current_subsection:
+                current_section["Subsections"].append(current_subsection)
+            current_subsection = {"Heading": stripped_line[3:].strip(), "Content": "", "Subsections": []}
+
+        # Handle `###` as lowest-level sections
+        elif stripped_line.startswith("### "):
+            if current_subsection:
+                current_subsection["Subsections"].append({
+                    "Heading": stripped_line[4:].strip(),
+                    "Content": []
+                })
+
+        # Add content to the current section or subsection
+        else:
+            if current_subsection and current_subsection["Subsections"]:
+                current_subsection["Subsections"][-1]["Content"].append(stripped_line)
+            elif current_subsection:
+                if current_subsection["Content"]:
+                    current_subsection["Content"] += "\n" + stripped_line
+                else:
+                    current_subsection["Content"] = stripped_line
+            elif current_section:
+                if current_section["Content"]:
+                    current_section["Content"] += "\n" + stripped_line
+                else:
+                    current_section["Content"] = stripped_line
+
+    # Append the last subsection and section
+    if current_subsection:
+        current_section["Subsections"].append(current_subsection)
+    if current_section:
+        json_data["Sections"].append(current_section)
+
+    return json_data
+
 
 
 # Extract text from ODT
@@ -169,23 +166,17 @@ async def convert(file: UploadFile):
             json_output = parse_markdown_to_json(markdown_content)
             return {"message": "Conversion successful", "json_output": json_output}
 
-        # Convert other formats to ODT
+        # Handle other formats to ODT and parse
         convert_to_odt(input_path, output_path, file.filename)
-
-        # Parse the ODT to JSON
         json_output = parse_odt_to_json(output_path)
-        return {
-            "message": "Conversion successful",
-            "json_output": json_output
-        }
+        return {"message": "Conversion successful", "json_output": json_output}
 
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Conversion failed: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing file: {e}")
     finally:
         if os.path.exists(input_path):
             os.remove(input_path)
-        if os.path.exists(output_path):
-            os.remove(output_path)
+
 
 def convert_to_odt(input_path, output_path, filename):
     """Converts various file formats to ODT."""
@@ -212,4 +203,8 @@ def convert_to_odt(input_path, output_path, filename):
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    try:
+        # Add any specific service checks here
+        return {"status": "healthy"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}

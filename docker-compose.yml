@@ -8,7 +8,6 @@ services:
     ports:
       - "3009:3009"
     environment:
-      - TEXT_SERVICE_API=http://text_extraction:8001
       - CONVERTER_API=http://converter:5000
       - XTTS_SERVER_API=http://tts_server:80
     volumes:
@@ -24,29 +23,6 @@ services:
         condition: service_healthy
     healthcheck:
       test: curl --fail http://localhost:3009 || exit 1
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-
-  text_extraction:
-    container_name: text_extraction
-    image: text-extraction
-    build:
-      context: ./text_extraction
-      dockerfile: Dockerfile
-    ports:
-      - "8001:8001"
-    environment:
-        - CONVERTER_API=http://converter:5000
-    depends_on:
-      - converter
-    volumes:
-      - text_extraction_logs:/app/logs
-    networks:
-      - app_network
-    healthcheck:
-      test:  curl --fail http://text_extraction:8001/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5

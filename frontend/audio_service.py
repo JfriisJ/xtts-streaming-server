@@ -56,51 +56,37 @@ if not os.path.exists(OUTPUT):
 import os
 
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
-
     if not selected_title:
-        print("No title selected for TTS.")
+        logger.warning("No title selected for TTS.")
         return None
 
     if not sections:
-        print("No sections available for TTS.")
+        logger.warning("No sections available for TTS.")
         return None
 
-    # Aggregate content for the selected title
     aggregated_content = get_aggregated_content(selected_title, sections)
     if not aggregated_content:
-        print(f"No content found for section: {selected_title}")
+        logger.warning(f"No content found for section: {selected_title}")
         return None
 
-    # Create folder named after the book title
-    folder_name = clean_filename(book_title)
-    folder_path = os.path.join("outputs", "generated_audios", folder_name)
-    os.makedirs(folder_path, exist_ok=True)
-
-
-
-    # Generate audio
+    # Generate audio using TTS service
     try:
-        print(f"Generating audio for: {selected_title}")
+        logger.info(f"Generating audio for: {selected_title}")
         audio_path = text_to_audio(
             text=aggregated_content,
             heading=selected_title,
-            lang=language,  # Default to English
-            speaker_type=speaker_type,  # Default speaker type
-            speaker_name_studio=studio_speaker,  # Default studio speaker
-            speaker_name_custom=None  # No custom speaker by default
+            lang=language,
+            speaker_type=speaker_type,
+            speaker_name_studio=studio_speaker
         )
-
-        # Move the audio to the folder
         if audio_path:
-            new_audio_path = os.path.join(folder_path, os.path.basename(audio_path))
-            shutil.move(audio_path, new_audio_path)
-            print(f"Audio saved to: {new_audio_path}")
-            return new_audio_path
+            logger.info(f"Audio saved to: {audio_path}")
+            return audio_path
         else:
-            print("Audio generation failed.")
+            logger.error("Audio generation failed.")
             return None
     except Exception as e:
-        print(f"Error generating audio: {e}")
+        logger.error(f"Error generating audio: {e}")
         return None
 
 

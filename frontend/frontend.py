@@ -28,60 +28,26 @@ def update_connection_status():
     return "\n".join(status_summary)
 
 
-# File processing handler
 def process_file(file):
     if not file:
         return "No file uploaded.", gr.update(choices=[]), None, ""
 
     try:
-        logger.info(f"Processing file: {file.name}")
         result = extract_text_from_file(file.name)
+        title = result.get("Title", file.name)
+        sections = result.get("Sections", [])
+        section_titles = [section["Heading"] for section in sections]
 
-        book_title = result.get("title", file.name)
-        sections = result.get("sections", [])
-        section_titles = [book_title] + [section["title"] for section in sections]
-
-        logger.debug(f"Extracted title: {book_title}")
-        logger.debug(f"Extracted sections: {sections[:5]}")  # Log first few sections for clarity
-
-        return (
-            book_title,
-            gr.update(choices=section_titles),
-            sections,
-            section_titles[0]
-        )
+        return title, gr.update(choices=section_titles), sections, section_titles[0] if section_titles else "No sections found."
     except Exception as e:
-        logger.error(f"Error processing file: {e}")
+        logger.error(f"Error processing file in frontend: {e}")
         return f"Error: {e}", gr.update(choices=[]), None, ""
 
-
-
-# Section content preview
-def preview_section(selected_title, sections):
-    if not sections:  # Handle None or empty sections
-        logger.warning("No sections available to preview.")
-        return "No sections available to preview."
-
-    logger.debug(f"Selected title: {selected_title}")
-    logger.debug(f"Available sections: {[section['title'] for section in sections]}")
-
-    for section in sections:
-        if section["title"] == selected_title:
-            logger.debug(f"Found content for section '{selected_title}': {section['content'][:5]}")  # Log first 100 chars
-            return section["content"]
-
-    logger.warning(f"No content found for section '{selected_title}'.")
-    return "No content available."
 
 def studio_speaker_change(speaker_type):
     if speaker_type == "Studio":
         return STUDIO_SPEAKERS.keys(),"Asya Anara" if "Asya Anara" in STUDIO_SPEAKERS.keys() else None
     return CLONED_SPEAKERS.value, CLONED_SPEAKERS.value[0] if len(CLONED_SPEAKERS.value) != 0 else None,
-
-def speaker_type_change(speaker_type):
-    if speaker_type == "Studio":
-        return [generated_audio], [book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type]
-    return [clone_speaker], [upload_file, clone_speaker_name, cloned_speaker_names]
 
 
 # Frontend interface
@@ -140,15 +106,12 @@ with gr.Blocks() as Book2Audio:
                     value=cloned_speaker_names.value[0] if len(cloned_speaker_names.value) != 0 else None,
                 )
 
-
-
-    # Interactivity
+    # UI for file processing
     file_input.change(
         process_file,
         inputs=[file_input],
         outputs=[book_title, section_titles, sections_state, section_preview]
     )
-    section_titles.change(preview_section, inputs=[section_titles, sections_state], outputs=[section_preview])
     process_btn.click(
         process_file,
         inputs=[file_input],
@@ -162,6 +125,14 @@ with gr.Blocks() as Book2Audio:
         fn=clone_speaker,
         inputs=[upload_file, clone_speaker_name, cloned_speaker_names],
         outputs=[upload_file, clone_speaker_name, cloned_speaker_names, speaker_name_custom],
+    )
+    section_titles.change(
+        lambda selected_title, sections: next(
+            (section["Content"] for section in sections if section["Heading"] == selected_title),
+            "No content found."
+        ),
+        inputs=[section_titles, sections_state],
+        outputs=[section_preview]
     )
 
     Book2Audio.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")
