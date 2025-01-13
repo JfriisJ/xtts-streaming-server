@@ -25,9 +25,18 @@ curl -X GET http://localhost:5000/formats
 
 ```
 
-{
-  "pdf": ["html", "txt", "docx"],
-  "docx": ["pdf", "html", "txt"],
-  "epub": ["html", "txt"],
-  "odt": ["pdf", "html", "txt"]
-}
+File Type Handling
+File Type	Processing Logic
+Markdown (.md)	- Directly parsed into JSON using the parse_markdown_to_json function.
+- Does not require conversion to .odt.
+EPUB (.epub)	- Converted to .odt using pandoc.
+- The .odt file is then parsed into a JSON structure based on heading styles.
+HTML (.html)	- Converted to .odt using pandoc.
+- The .odt file is parsed for headings and categorized.
+DOCX (.docx)	- Converted to .odt using LibreOffice in headless mode.
+- Parsed to extract text and structured as JSON.
+ODT (.odt)	- Parsed directly without additional conversion to extract headings and content.
+Plain Text (.txt)	- Converted to .odt using LibreOffice (optional).
+- Plain text usually lacks headings, so it may be grouped under a single category (e.g., Paragraphs or General Content).
+PDF (.pdf)	- Requires external tools like pdf2txt or pdftohtml for conversion to .odt.
+- After conversion, the resulting .odt file is processed as above.
