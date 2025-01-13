@@ -93,9 +93,10 @@ def process_file(file):
 
 
 
-def update_speakers(speaker_type):
+def update_speakers(speaker_type, current_selection=None):
     """
     Dynamically update the speaker dropdown based on the speaker type.
+    Automatically select a default speaker if none is currently selected or if the current selection is invalid.
     """
     try:
         # Determine the list of speakers based on the selected type
@@ -106,19 +107,26 @@ def update_speakers(speaker_type):
         else:
             speakers = []
 
-        # Set the default speaker
-        default_speaker = "Asya Anara" if "Asya Anara" in speakers else speakers[0] if speakers else None
+        if not speakers:
+            logger.warning(f"No speakers found for type: {speaker_type}")
+            return gr.update(choices=[], value=None)
 
-        # Log the update
-        logger.info(f"Speaker dropdown updated for type: {speaker_type} with speakers: {speakers}")
+        # Choose a default speaker
+        if current_selection not in speakers:
+            default_speaker = "Asya Anara" if "Asya Anara" in speakers else speakers[0]
+        else:
+            default_speaker = current_selection
 
-        # Update the Gradio dropdown with the speaker list
+        logger.info(f"Speaker dropdown updated for type: {speaker_type} with speakers: {speakers}. Default: {default_speaker}")
+
+        # Update the dropdown with the speaker list and set the default
         return gr.update(choices=speakers, value=default_speaker)
 
     except Exception as e:
-        # Log and handle errors
         logger.error(f"Error updating speakers: {e}")
         return gr.update(choices=[], value=None)
+
+
 
 
 def log_and_generate_audio(book_title, selected_title, sections_state, language, speaker_name, speaker_type):
