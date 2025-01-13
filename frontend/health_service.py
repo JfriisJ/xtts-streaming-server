@@ -15,22 +15,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def check_service_health():
-    services = {
-        "Converter Service": CONVERTER_API,
-        "Xtts Service": XTTS_SERVER_API,
-    }
-
+    services = {"Converter Service": CONVERTER_API, "Xtts Service": XTTS_SERVER_API}
     status = {}
+
     for service_name, url in services.items():
         try:
-            response = requests.get(url + "/health", timeout=10)
-            response_data = response.json()
-            if response.status_code == 200 and response_data.get("status") == "healthy":
-                status[service_name] = {"status": "Connected"}
-            else:
-                error_message = response_data.get("error", "Unknown Error")
-                status[service_name] = {"status": "Disconnected", "error": error_message}
-        except requests.exceptions.RequestException as e:
+            response = requests.get(f"{url}/health", timeout=10)
+            response.raise_for_status()
+            status[service_name] = {"status": "Connected"}
+        except requests.RequestException as e:
+            logger.error(f"{service_name} health check failed: {e}")
             status[service_name] = {"status": "Disconnected", "error": str(e)}
-    return status
 
+    return status

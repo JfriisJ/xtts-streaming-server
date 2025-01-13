@@ -56,6 +56,8 @@ if not os.path.exists(OUTPUT):
 import os
 
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
+    logger.info(f"Generating audio for: {selected_title}")
+
     if not selected_title:
         logger.warning("No title selected for TTS.")
         return None
@@ -64,12 +66,11 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
         logger.warning("No sections available for TTS.")
         return None
 
-    aggregated_content = get_aggregated_content(selected_title, sections)
+    aggregated_content = aggregate_section_content(selected_title, sections)
     if not aggregated_content:
         logger.warning(f"No content found for section: {selected_title}")
         return None
 
-    # Generate audio using TTS service
     try:
         logger.info(f"Generating audio for: {selected_title}")
         audio_path = text_to_audio(
@@ -91,6 +92,7 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
 
 
 
+
 def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
     files = {"wav_file": ("reference.wav", open(upload_file, "rb"))}
     embeddings = requests.post(XTTS_SERVER_API + "/clone_speaker", files=files).json()
@@ -99,25 +101,41 @@ def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
     CLONED_SPEAKERS[clone_speaker_name] = embeddings
     cloned_speaker_names.append(clone_speaker_name)
 
-def get_aggregated_content(selected_title, sections, include_subsections=True):
+
+def aggregate_section_content(selected_title, sections, include_subsections=True):
+    """
+    Aggregate content for the selected title and its subsections.
+    """
+    logger.debug(f"Aggregating content for title: {selected_title}")
+    logger.debug(f"Sections to aggregate: {sections}")
+
+    if not isinstance(sections, list):
+        logger.error("Expected `sections` to be a list.")
+        return "Invalid input: Sections must be a list."
+
     aggregated_content = []
 
     def collect_content(section, include, depth=0):
         indent = "  " * depth
-        if section.get("title") == selected_title:
+        if section.get("Heading") == selected_title:
             include = True
-            print(f"{indent}*** Matched section: '{section['title']}' (Style: {section.get('style', 'Unknown Style')})")
+            logger.info(f"{indent}Matched section: '{section.get('Heading')}'")
 
         if include:
-            aggregated_content.append(section.get("content", ""))
+            aggregated_content.append(section.get("Content", "").strip())
 
-        for subsection in section.get("subsections", []):
-            collect_content(subsection, include, depth + 1)
+        if include_subsections:
+            for subsection in section.get("Subsections", []):
+                collect_content(subsection, include, depth + 1)
 
     for section in sections:
         collect_content(section, include=False)
 
-    return "\n\n".join(filter(None, aggregated_content))
+    result = "\n\n".join(filter(None, aggregated_content))
+    logger.debug(f"Aggregated content result: {result}")
+    return result
+
+
 
 def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):
     # Get the first line as the file name
