@@ -32,7 +32,7 @@ def check_service_health():
     status = {}
     for service_name, url in services.items():
         try:
-            response = requests.get(url + "/health", timeout=5)
+            response = requests.get(url + "/health", timeout=10)
             # Handle non-JSON responses
             try:
                 response_data = response.json()

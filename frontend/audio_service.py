@@ -14,7 +14,7 @@ import requests
 from pydub import AudioSegment
 from transformers import GPT2TokenizerFast
 
-from health_service import AUDIO_SERVICE_API, check_service_health
+from health_service import AUDIO_SERVICE_API
 
 # Setup logging
 logging.basicConfig(
@@ -30,20 +30,22 @@ os.makedirs(os.path.join(OUTPUT, "cloned_speakers"), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT, "generated_audios"), exist_ok=True)
 
 
-# Check connection to audio service, if not connected retry in 5 seconds
-print ("Checking audio service connection...")
-while True:
-    if check_service_health().get("Audio Service", {}).get("status") == "Connected":
-        print ("Audio service connected")
-        LANGUAGES = requests.get(f"{AUDIO_SERVICE_API}/languages").json()
-        STUDIO_SPEAKERS = requests.get(f"{AUDIO_SERVICE_API}/studio_speakers").json()
+LANGUAGES, STUDIO_SPEAKERS, CLONED_SPEAKERS = {}, {}, {}
+retries = 5
+for attempt in range(retries):
+    try:
+        LANGUAGES = requests.get(f"{AUDIO_SERVICE_API}/languages", timeout=10).json()
+        STUDIO_SPEAKERS = requests.get(f"{AUDIO_SERVICE_API}/studio_speakers", timeout=10).json()
         CLONED_SPEAKERS = {}
-        print (LANGUAGES)
-        print (STUDIO_SPEAKERS.keys())
-        logger.info("Audio service connected.")
+        print("Audio service connected.")
         break
-    logger.warning("Audio service not connected. Retrying in 5 seconds...")
-    time.sleep(5)
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Audio service connection attempt {attempt + 1} failed: {e}")
+        if attempt < retries - 1:
+            time.sleep(10)
+        else:
+            logger.error("Failed to connect to the audio service after multiple attempts.")
+
 
 print("Preparing file structure...")
 if not os.path.exists(OUTPUT):
@@ -52,45 +54,73 @@ if not os.path.exists(OUTPUT):
     os.mkdir(os.path.join(OUTPUT, "generated_audios"))
 
 
+import os
+
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
-    if not selected_title:
-        logger.warning("No title selected for TTS.")
-        return None
-
-    if not sections:
-        logger.warning("No sections available for TTS.")
-        return None
-
-    # Create folder named after the book title
-    folder_name = clean_filename(book_title)
+    """
+    Generate audio for each section or subchapter and save files with structured filenames, including titles for empty sections.
+    """
+    # Determine the folder name based on book or chapter title
+    folder_name = clean_filename(selected_title)
     folder_path = os.path.join("outputs", "generated_audios", folder_name)
     os.makedirs(folder_path, exist_ok=True)
 
-    # Generate audio
-    try:
-        logger.info(f"Generating audio for: {selected_title}")
+    # Collect relevant sections
+    content_to_generate = []
+    if selected_title == book_title:  # Generate for the entire book
+        content_to_generate = sections
+    else:  # Generate for the selected chapter and its subchapters
+        capture_content = False
+        for section in sections:
+            if section["title"] == selected_title or capture_content:
+                content_to_generate.append(section)
+                capture_content = True
+                # Stop capturing when the next top-level section is reached
+                if section["style"] == "Heading 1" and section["title"] != selected_title:
+                    break
+
+    if not content_to_generate:
+        logger.warning(f"No content found for {selected_title}.")
+        return None
+
+    generated_files = []
+    for idx, section in enumerate(content_to_generate, start=1):
+        section_title = section["title"]
+        section_content = section.get("content", "")
+
+        # Handle empty sections by using only the title
+        if not section_content.strip():
+            logger.warning(f"Section '{section_title}' is empty. Generating audio for title only.")
+            section_content = f"This is the section titled {section_title}."  # Customize this template if needed
+
+        # Generate filename
+        file_name = f"{str(idx).zfill(2)}_{clean_filename(section_title)}.{output_format}"
+        file_path = os.path.join(folder_path, file_name)
+
+        logger.info(f"Generating audio for section: {section_title}")
+
+        # Call TTS service to generate audio
         audio_path = text_to_audio(
             title=book_title,
-            heading=selected_title,
-            text=sections,
-            language=language,  # Default to English
+            heading=section_title,
+            text=section_content,
+            language=language,
             studio_speaker=studio_speaker,
             speaker_type=speaker_type,
-            output_format=output_format  # Default to WAV format
+            output_format=output_format
         )
 
-        # Move the audio to the folder
         if audio_path:
             new_audio_path = os.path.join(folder_path, os.path.basename(audio_path))
-            shutil.move(audio_path, new_audio_path)
-            logger.info(f"Audio saved to: {new_audio_path}")
-            return new_audio_path
+            os.rename(audio_path, file_path)  # Save with structured filename
+            generated_files.append(file_path)
+            logger.info(f"Audio saved as: {file_path}")
         else:
-            logger.error("Audio generation failed.")
-            return None
-    except Exception as e:
-        logger.exception(f"Error generating audio: {e}")
-        return None
+            logger.error(f"Audio generation failed for section: {section_title}")
+
+    return generated_files
+
+
 
 def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
     files = {"wav_file": ("reference.wav", open(upload_file, "rb"))}

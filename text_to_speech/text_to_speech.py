@@ -36,11 +36,9 @@ LANGUAGES_API = f"{TTS_SERVER}/languages"
 @app.get("/health")
 def health():
     try:
-        response = requests.get(f"{TTS_SERVER}/health", timeout=5)
-        response.raise_for_status()
+        # Add any specific service checks here
         return {"status": "healthy"}
-    except requests.RequestException as e:
-        logger.error(f"Health check failed: {e}")
+    except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
 
 

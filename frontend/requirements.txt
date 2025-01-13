@@ -3,3 +3,8 @@ gradio
 lxml
 nltk
 fastapi
+transformers
+pydub
+uvicorn
+aiofiles
+ffmpeg-python

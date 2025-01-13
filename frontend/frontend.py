@@ -4,7 +4,7 @@ import logging
 
 import gradio as gr
 
-from audio_service import generate_audio, LANGUAGES, STUDIO_SPEAKERS, clone_speaker, CLONED_SPEAKERS
+from audio_service import generate_audio,  clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
 from health_service import check_service_health
 from text_service import extract_text_from_file
 
@@ -21,18 +21,12 @@ logger = logging.getLogger(__name__)
 # Function to get the connection status
 def update_connection_status():
     status = check_service_health()  # Call the health check function
-    all_connected = all(service["status"] == "Connected" for service in status.values())
 
-    if all_connected:
-        return "All Services Connected"
-    else:
-        # Create a status summary for disconnected services
-        status_summary = []
-        for service_name, service_status in status.items():
-            if service_status["status"] != "Connected":
-                error_detail = service_status.get("error", "Unknown Error")
-                status_summary.append(f"{service_name}: {service_status['status']} ({error_detail})")
-        return "\n".join(status_summary)
+    # Create a status summary for disconnected services
+    status_summary = []
+    for service_name, service_status in status.items():
+        status_summary.append(f"{service_name}: {service_status['status']}")
+    return "\n".join(status_summary)
 
 
 # File processing handler
@@ -45,20 +39,26 @@ def process_file(file):
         result = extract_text_from_file(file.name)  # Send file to text_service
 
         # Extract title and sections
-        title = result.get("title", file.name)
+        # Extract sections
+        result = extract_text_from_file(file.name)
+        book_title = result.get("title", file.name)
         sections = result.get("sections", [])
-        section_titles = [section["title"] for section in sections]
+        # title = result.get("title", file.name)
+        # sections = result.get("sections", [])
+        # section_titles = [section["title"] for section in sections]
 
-        logger.debug(f"Extracted title: {title}")
+        logger.debug(f"Extracted title: {book_title}")
         logger.debug(f"Extracted sections: {sections[:5]}")  # Log first few sections for clarity
+        # Add the book title at the top of the dropdown
+        section_titles = [book_title] + [section["title"] for section in sections]
 
         # Update UI components
         return (
-            title,
+            book_title,
             gr.update(choices=section_titles),
             sections,
             section_titles[0],
-            json.dumps(result, indent=2)  # Display full JSON response in a new field
+            json.dumps(result, indent=2)
         )
     except Exception as e:
         logger.error(f"Error processing file: {e}")
@@ -123,7 +123,7 @@ with gr.Blocks() as demo:
             lang_dropdown = gr.Dropdown(
                 label="Language",
                 choices=LANGUAGES,
-                value="en"
+                value="en" if "en" in LANGUAGES else None
             )
 
         # File processing and preview
@@ -166,7 +166,7 @@ with gr.Blocks() as demo:
     tts_button.click(
         generate_audio,
         inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type],
-        outputs=[generated_audio]
+        outputs=[]
     )
     clone_button.click(
         fn=clone_speaker,
