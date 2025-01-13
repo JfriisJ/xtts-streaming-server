@@ -1,9 +1,10 @@
+import json
 import os
 import logging
 import gradio as gr
-from audio_service import generate_audio, clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS, aggregate_section_content
+from audio_service import generate_audio, clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
 from health_service import check_service_health
-from text_service import extract_text_from_file, present_text_to_ui
+from text_service import extract_text_from_file, present_text_to_ui, aggregate_section_content
 
 # Logging configuration
 os.makedirs('/app/logs', exist_ok=True)
@@ -28,102 +29,69 @@ def update_connection_status():
         return "Error checking service status."
 
 
-def update_section_content(selected_title, sections):
+def update_section_content(book_title, selected_title, sections_state):
     """
-    Update the section preview and content based on the selected section or the entire book if the title is selected.
+    Display the pre-aggregated content for the book title or specific sections.
     """
-    if not sections:
+    logger.debug(f"Selected title: {selected_title}")
+    logger.debug(f"Sections state provided: {sections_state}")
+
+    if not sections_state:
+        logger.warning("No sections available.")
         return "No content available."
 
-    # Check if the selected title matches the book's title
-    if selected_title == sections[0].get("Title", "Unknown Book"):
-        # Aggregate all sections if the book title is selected
-        return "\n".join(
-            [aggregate_section_content(selected_title, section.get("Subsections", []), include_subsections=True) for section in sections]
-        )
+    if selected_title == book_title:
+        # Return pre-aggregated content for the entire book
+        full_book_content = sections_state.get("FullBookContent", "")
+        logger.debug(f"Using pre-aggregated content for book title: {full_book_content[:500]}...")
+        return full_book_content
 
-    # Display content for the selected section
-    for section in sections:
+    # Find and display content for the selected section
+    for section in sections_state.get("Sections", []):
         if section.get("Heading") == selected_title:
-            # Aggregate content for the selected section only
-            return aggregate_section_content(selected_title, [section])
+            content = aggregate_section_content(selected_title, [section])
+            logger.debug(f"Content for section '{selected_title}': {content[:500]}...")
+            return content
 
+    logger.warning(f"No matching section found for title: {selected_title}")
     return "No matching section found."
 
 
 def process_file(file):
     """
-    Process the uploaded file and display formatted content, including the book title for whole-book processing.
+    Process the uploaded file and display formatted content, including pre-aggregated text for the book title.
     """
     if not file:
         return "No file uploaded.", gr.update(choices=[]), None, "", ""
 
     try:
         raw_result, file_name = extract_text_from_file(file.name)
-        logger.debug(f"Raw result: {raw_result}")
-        logger.debug(f"Extracted sections: {raw_result.get('Sections')}")
+        formatted_json_output = json.dumps(raw_result, indent=4, ensure_ascii=False)
+        logger.debug(f"Raw extraction result: {raw_result}")
 
+        # Extract title and sections
         title, section_titles, formatted_content = present_text_to_ui(raw_result, file_name)
 
-        # Populate dropdown with section titles
-        section_titles = [section.get("Heading", "Untitled Section") for section in raw_result.get("Sections", [])]
-        logger.debug(f"Generated section titles: {section_titles}")
+        # Aggregate content for the entire book
+        sections = raw_result.get("Sections", [])
+        full_book_content = aggregate_section_content(title, sections, include_subsections=True)
 
-        if not section_titles:
+        # Ensure the book title is only included once
+        if title not in section_titles:
+            section_titles.insert(0, title)
+
+        # Update dropdown and state
+        if not sections:
             return title, gr.update(choices=[]), [], "No sections found.", ""
 
         logger.info(f"File processed successfully: {file.name}")
-        return title, gr.update(choices=section_titles), raw_result.get("Sections", []), formatted_content, raw_result
+        return title, gr.update(choices=section_titles), {"Sections": sections, "FullBookContent": full_book_content}, formatted_content, formatted_json_output
 
     except Exception as e:
         logger.error(f"Error processing file: {e}")
-        return f"Error: {e}", gr.update(choices=[]), None, "", ""
+        return "Error processing file.", gr.update(choices=[]), None, "", ""
 
 
-def update_section_content(selected_title, sections):
-    """
-    Update the section preview and content based on the selected section or the entire book if the title is selected.
-    """
-    if not sections:
-        return "No content available."
-
-    if selected_title == sections[0].get("Title", "Unknown Book"):
-        return "\n".join(
-            [aggregate_section_content(selected_title, section, include_subsections=True) for section in sections]
-        )
-
-    for section in sections:
-        if section.get("Heading") == selected_title:
-            return aggregate_section_content(selected_title, [section])
-
-    return "No matching section found."
-
-def update_section_content(selected_title, sections):
-    """
-    Update the section preview and content based on the selected section or the entire book if the title is selected.
-    """
-    logger.debug(f"Selected title: {selected_title}")
-    logger.debug(f"Sections provided: {sections}")
-
-    if not sections:
-        logger.warning("No sections available.")
-        return "No content available."
-
-    if selected_title == sections[0].get("Title", "Unknown Book"):
-        content = "\n".join(
-            [aggregate_section_content(selected_title, section, include_subsections=True) for section in sections]
-        )
-        logger.debug(f"Aggregated content for book title: {content}")
-        return content
-
-    for section in sections:
-        if section.get("Heading") == selected_title:
-            content = aggregate_section_content(selected_title, [section])
-            logger.debug(f"Aggregated content for section '{selected_title}': {content}")
-            return content
-
-    logger.warning(f"No matching section found for title: {selected_title}")
-    return "No matching section found."
 
 def update_speakers(speaker_type):
     """
@@ -139,7 +107,7 @@ def update_speakers(speaker_type):
             speakers = []
 
         # Set the default speaker
-        default_speaker = speakers[0] if speakers else None
+        default_speaker = "Asya Anara" if "Asya Anara" in speakers else speakers[0] if speakers else None
 
         # Log the update
         logger.info(f"Speaker dropdown updated for type: {speaker_type} with speakers: {speakers}")
@@ -187,7 +155,7 @@ def get_selected_content(selected_title, sections):
 with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
     connection_status = gr.Textbox(label="Service Status", value="Checking...", interactive=False)
-    gr.Timer(value=5).tick(update_connection_status, inputs=[], outputs=[connection_status])
+    gr.Timer(value=20).tick(update_connection_status, inputs=[], outputs=[connection_status])
 
     with gr.Tab("TTS"):
         with gr.Row():
@@ -226,7 +194,7 @@ with gr.Blocks() as Book2Audio:
     )
     section_titles.change(
         update_section_content,
-        inputs=[section_titles, sections_state],
+        inputs=[book_title, section_titles, sections_state],
         outputs=[section_preview]
     )
     tts_button.click(

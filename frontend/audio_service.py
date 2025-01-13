@@ -86,10 +86,6 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
         logger.error(f"Error generating audio for section '{selected_title}': {e}")
         return None
 
-
-
-
-
 def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
     files = {"wav_file": ("reference.wav", open(upload_file, "rb"))}
     embeddings = requests.post(XTTS_SERVER_API + "/clone_speaker", files=files).json()
@@ -101,62 +97,33 @@ def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
 
 def aggregate_section_content(selected_title, sections, include_subsections=True):
     """
-    Aggregate content for the selected title and its subsections with enhanced logging for debugging.
+    Aggregates content for the selected section and its subsections.
     """
     logger.debug(f"Starting aggregation for title: {selected_title}")
-    logger.debug(f"Input sections: {sections}")
-
-    if not isinstance(sections, list):
-        logger.error(f"Invalid input type for sections: {type(sections).__name__}. Expected list.")
-        return "Invalid input: Sections must be a list."
+    logger.debug(f"Sections: {json.dumps(sections, indent=2)}")  # Logs sections for debugging
 
     aggregated_content = []
 
     def collect_content(section, include, depth=0):
-        if not isinstance(section, dict):
-            logger.warning(f"Invalid section format at depth {depth}: {section}")
-            return
-
-        indent = "  " * depth
-        logger.debug(f"{indent}Processing section: {section.get('Heading', 'Untitled Section')}")
-
-        if section.get("Heading") == selected_title:
+        if section.get("title") == selected_title:
             include = True
-            logger.info(f"{indent}Matched section: '{section.get('Heading')}'. Including content.")
+            logger.debug(f"Matched section: '{section['title']}'")
 
-        content = section.get("Content", "")
-        logger.debug(f"{indent}Content type: {type(content).__name__}. Content: {content}")
+        if include:
+            content = section.get("content", "").strip()
+            if content:
+                aggregated_content.append(content)
 
-        # Aggregate content based on its type
-        if isinstance(content, list):
-            try:
-                joined_content = "\n".join(content).strip()
-                aggregated_content.append(joined_content)
-                logger.debug(f"{indent}Aggregated list content: {joined_content}")
-            except Exception as e:
-                logger.error(f"{indent}Error processing list content: {e}")
-        elif isinstance(content, str):
-            aggregated_content.append(content.strip())
-            logger.debug(f"{indent}Aggregated string content: {content.strip()}")
-        else:
-            logger.warning(f"{indent}Unexpected content format: {content}")
+        for subsection in section.get("subsections", []):
+            collect_content(subsection, include, depth + 1)
 
-        # Process subsections if required
-        if include_subsections:
-            for subsection in section.get("Subsections", []):
-                if isinstance(subsection, dict):
-                    collect_content(subsection, include, depth + 1)
-                else:
-                    logger.warning(f"{indent}Unexpected subsection format at depth {depth + 1}: {subsection}")
-
-    # Process each section in the list
-    for idx, section in enumerate(sections):
-        logger.debug(f"Processing section {idx + 1}/{len(sections)}: {section.get('Heading', 'Untitled Section')}")
+    for section in sections:
         collect_content(section, include=False)
 
     result = "\n\n".join(filter(None, aggregated_content))
-    logger.debug(f"Final aggregated content: {result}")
+    logger.info(f"Aggregated Content: {result}")
     return result
+
 
 
 def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):

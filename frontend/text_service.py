@@ -46,29 +46,46 @@ def extract_text_from_file(file_path):
         logger.exception("Invalid JSON response from converter service.")
         raise Exception("Error parsing response from converter service.") from e
 
-def format_section(section, depth=0):
+def format_section(section, depth=0, max_depth=1000, visited=None):
     """
-    Format a single section and its subsections recursively.
+    Format a single section and its subsections recursively with proper handling of strings.
     """
-    indent = "  " * depth  # Indentation for nested levels
+    if depth > max_depth:
+        logger.error(f"Exceeded maximum depth of {max_depth} at section: {section.get('Heading', 'Untitled Section')}")
+        return f"{'  ' * depth}Recursion limit reached for this section.\n"
+
+    if visited is None:
+        visited = set()
+
+    section_id = id(section)
+    if section_id in visited:
+        logger.error(f"Circular reference detected in section: {section.get('Heading', 'Untitled Section')}")
+        return f"{'  ' * depth}Circular reference detected.\n"
+    visited.add(section_id)
+
+    indent = "  " * depth
     formatted_text = f"{indent}{section.get('Heading', 'Untitled Section')}\n"
 
-    # Add the content of the section
     content = section.get("Content", "")
-    if isinstance(content, list):
-        formatted_text += "\n".join([f"{indent}- {item}" for item in content]) + "\n"
-    elif content:
-        formatted_text += f"{indent}{content}\n"
+    if isinstance(content, str):
+        # Avoid splitting text into individual characters
+        formatted_text += f"{indent}{content.strip()}\n"
+    elif isinstance(content, list):
+        # Properly handle lists as concatenated strings
+        formatted_text += f"{indent}" + " ".join(content).strip() + "\n"
 
-    # Recursively format subsections
     for subsection in section.get("Subsections", []):
-        formatted_text += format_section(subsection, depth + 1)
+        formatted_text += format_section(subsection, depth + 1, max_depth, visited)
 
+    visited.remove(section_id)
     return formatted_text
+
+
 
 def present_text_to_ui(result, file_name):
     """
     Format the JSON output for display in the UI, including nested sections and subsections.
+    Adds the book title as a section.
     """
     try:
         title = result.get("Title", file_name)
@@ -77,16 +94,20 @@ def present_text_to_ui(result, file_name):
         if not sections:
             logger.warning("No sections found in the response.")
             return title, [], "No sections found."
-        json_data = {"Title": title, "Sections": []}
-        if not isinstance(json_data["Sections"], list):
-            json_data["Sections"] = [json_data["Sections"]]
 
-        # Format all sections
+        # Add the book title as a synthetic section
+        synthetic_section = {
+            "Heading": title,
+            "Content": "",
+            "Subsections": sections[:]  # Shallow copy to prevent circular references
+        }
+        sections.insert(0, synthetic_section)
+
+        # Format all sections for display
         formatted_sections = "\n".join([format_section(section) for section in sections])
 
-        # Extract top-level section titles for dropdown
+        # Extract top-level section titles for the dropdown
         section_titles = [section.get("Heading", "Untitled Section") for section in sections]
-
 
         logger.info("Formatted response for UI display.")
         return title, section_titles, formatted_sections
@@ -94,3 +115,41 @@ def present_text_to_ui(result, file_name):
     except Exception as e:
         logger.exception("Error formatting response for UI.")
         raise Exception("Failed to format response for UI.") from e
+
+
+def aggregate_section_content(selected_title, sections, include_subsections=True):
+    logger.debug(f"Aggregating content for title: {selected_title}")
+
+    aggregated_content = []
+
+    def collect_content(section, include=False, depth=0):
+        if not isinstance(section, dict):
+            logger.warning(f"Invalid section format at depth {depth}: {section}")
+            return
+
+        # Match the selected title
+        if section.get("Heading") == selected_title or include:
+            include = True
+            logger.debug(f"Matched section: '{section.get('Heading', 'Untitled Section')}' at depth {depth}")
+
+        # Collect content
+        content = section.get("Content", "")
+        if include and isinstance(content, str):
+            aggregated_content.append(content.strip())
+        elif include and isinstance(content, list):
+            aggregated_content.extend(item.strip() for item in content if isinstance(item, str))
+
+        # Process subsections
+        if include_subsections and include:
+            for subsection in section.get("Subsections", []):
+                collect_content(subsection, include, depth + 1)
+
+    # Process each section
+    for section in sections:
+        collect_content(section)
+
+    result = "\n\n".join(filter(None, aggregated_content))
+    logger.debug(f"Final aggregated content: {result[:500]}...")
+    return result
+
+
