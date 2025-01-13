@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy application files
-COPY converter.py md_2_json.py requirements.txt ./
+COPY . .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \

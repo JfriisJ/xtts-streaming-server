@@ -78,23 +78,26 @@ def aggregate_section_with_subsections(section):
 def split_text_into_tuples(sections):
     """
     Splits the book text into tuples of (index, section_name, content).
-    Ensures hierarchical indexes are accurate and all sections are processed.
+    Ensures hierarchical indexes follow a consistent 4-level pattern.
     """
     tuples = []
     section_counts = {}  # Track counts for each index prefix
 
-    def process_section(section, index_prefix=""):
+    def process_section(section, index_prefix="1.0.0.0"):
         heading = section.get("Heading", "").strip()
         content = section.get("Content", "")
 
         # Increment the count for the current index prefix
         if index_prefix not in section_counts:
-            section_counts[index_prefix] = 1
-        else:
-            section_counts[index_prefix] += 1
+            section_counts[index_prefix] = 0
+        section_counts[index_prefix] += 1
 
         # Generate hierarchical index
-        current_index = f"{index_prefix}{section_counts[index_prefix]}"
+        parts = index_prefix.split(".")
+        if len(parts) < 4:
+            parts.extend(["0"] * (4 - len(parts)))  # Ensure 4 parts
+        parts[-1] = str(section_counts[index_prefix])  # Update the last part
+        current_index = ".".join(parts)
 
         # Handle content as a list or string
         if isinstance(content, list):
@@ -116,7 +119,7 @@ def split_text_into_tuples(sections):
         # Process each subsection independently
         subsections = section.get("Subsections", [])
         for subsection in subsections:
-            process_section(subsection, index_prefix=f"{current_index}.")
+            process_section(subsection, index_prefix=current_index)
 
     # Process each top-level section
     for section in sections:

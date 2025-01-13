@@ -8,6 +8,8 @@ from xml.etree.ElementTree import parse
 import re
 
 from md_2_json import parse_markdown_to_json
+from html_2_json import parse_html_to_json
+from odt_2_json import parse_odt_to_json
 
 # Setup logging
 os.makedirs('/app/logs', exist_ok=True)
@@ -34,54 +36,6 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 
 
-# Extract text from ODT
-def parse_odt_to_json(odt_file_path):
-    """Extracts and organizes text from an ODT file into JSON."""
-    try:
-        with zipfile.ZipFile(odt_file_path, 'r') as odt_zip:
-            with odt_zip.open('content.xml') as content_file:
-                tree = parse(content_file)
-                root = tree.getroot()
-
-        namespaces = {'text': 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'}
-        styled_content = {
-            "Title": [],
-            "Heading 1": [],
-            "Heading 2": [],
-            "Heading 3": [],
-            "Heading 4": [],
-            "Heading 5": [],
-            "Paragraphs": []
-        }
-
-        for paragraph in root.findall('.//text:p', namespaces):
-            style_name = paragraph.attrib.get(f'{{{namespaces["text"]}}}style-name', "Default")
-            text_content = paragraph.text or ""
-            text_content = text_content.strip()
-
-            if not text_content:
-                continue
-
-            if style_name.startswith("Title"):
-                styled_content["Title"].append(text_content)
-            elif style_name.startswith("Heading_20_1"):
-                styled_content["Heading 1"].append(text_content)
-            elif style_name.startswith("Heading_20_2"):
-                styled_content["Heading 2"].append(text_content)
-            elif style_name.startswith("Heading_20_3"):
-                styled_content["Heading 3"].append(text_content)
-            elif style_name.startswith("Heading_20_4"):
-                styled_content["Heading 4"].append(text_content)
-            elif style_name.startswith("Heading_20_5"):
-                styled_content["Heading 5"].append(text_content)
-            else:
-                styled_content["Paragraphs"].append(text_content)
-
-        return {k: v for k, v in styled_content.items() if v}
-    except Exception as e:
-        logger.error(f"Error extracting text from ODT file: {e}")
-        raise HTTPException(status_code=500, detail="Error extracting text from ODT file.")
-
 def parse_epub_to_json(file_path):
     """
     Parse EPUB files into a structured JSON format.
@@ -99,35 +53,6 @@ def parse_epub_to_json(file_path):
     except Exception as e:
         logger.error(f"Error parsing EPUB: {e}")
         raise HTTPException(status_code=500, detail="Error parsing EPUB file.")
-
-def parse_html_to_json(html_content):
-    """
-    Parse HTML content into structured JSON.
-    """
-    soup = BeautifulSoup(html_content, 'html.parser')
-    sections = []
-
-    def parse_section(tag, level=1):
-        section = {
-            "Heading": tag.get_text(strip=True),
-            "Content": "",
-            "Subsections": []
-        }
-        next_level_tags = tag.find_all(f'h{level + 1}')
-        for sub_tag in next_level_tags:
-            subsection = parse_section(sub_tag, level + 1)
-            section["Subsections"].append(subsection)
-        return section
-
-    # Identify the main headings (e.g., h1)
-    main_headings = soup.find_all('h1')
-    for heading in main_headings:
-        sections.append(parse_section(heading, 1))
-
-    return {
-        "Title": soup.title.string if soup.title else "Untitled",
-        "Sections": sections
-    }
 
 
 @app.post("/convert")

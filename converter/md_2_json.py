@@ -1,3 +1,6 @@
+import re
+
+
 def parse_markdown_to_json(markdown_content, remove_code_blocks=True, remove_tables=True):
     """
     Parse Markdown content into structured JSON with hierarchical levels.

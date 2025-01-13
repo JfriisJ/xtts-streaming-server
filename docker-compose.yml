@@ -10,12 +10,6 @@ services:
     environment:
       - CONVERTER_API=http://converter:5000
       - XTTS_SERVER_API=http://tts_server:80
-    volumes:
-      - frontend_logs:/app/logs
-      - converter_uploads:/app/uploads
-      - converter_outputs:/app/outputs
-      - tts_logs:/app/tts_logs
-      - tts_outputs:/app/tts_outputs
     networks:
       - app_network
     depends_on:
@@ -71,11 +65,7 @@ services:
 volumes:
   tts_server_models:
     driver: local
-  frontend_logs:
-    driver: local
   tts_logs:
-    driver: local
-  text_extraction_logs:
     driver: local
   converter_uploads:
     driver: local
