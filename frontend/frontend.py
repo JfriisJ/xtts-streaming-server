@@ -85,7 +85,14 @@ def process_file(file):
             return title, gr.update(choices=[]), [], "No sections found.", ""
 
         logger.info(f"File processed successfully: {file.name}")
-        return title, gr.update(choices=section_titles), {"Sections": sections, "FullBookContent": full_book_content}, formatted_content, formatted_json_output
+        return (
+            title,
+            gr.update(choices=section_titles),
+            {"Sections": sections,
+             "FullBookContent": full_book_content},
+            formatted_content,
+            formatted_json_output
+        )
 
     except Exception as e:
         logger.error(f"Error processing file: {e}")
@@ -129,21 +136,28 @@ def update_speakers(speaker_type, current_selection=None):
 
 
 
-def log_and_generate_audio(book_title, selected_title, sections_state, language, speaker_name, speaker_type):
+def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type):
     """
-    Logs the input data before passing it to the generate_audio function.
+    Logs the input data and generates audio for the selected title or entire book.
     """
-    logger.info(f"Frontend -> Audio Service: Preparing to generate audio")
-    logger.debug(f"Book Title: {book_title}")
-    logger.debug(f"Selected Section Title: {selected_title}")
-    logger.debug(f"Language: {language}")
-    logger.debug(f"Speaker Type: {speaker_type}")
-    logger.debug(f"Speaker Name: {speaker_name}")
-    logger.debug(f"Sections State: {sections_state}")
+    logger.info(f"Generating audio for: {selected_title or book_title}")
+    logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}")
+    logger.debug(f"Sections state: {json.dumps(sections_state, indent=2)}")
 
-    return generate_audio(
-        book_title, selected_title, sections_state, language, speaker_name, speaker_type
+    sections = sections_state.get("Sections", [])
+    audio_files = generate_audio(
+        book_title,
+        selected_title,
+        sections,
+        language=language,
+        studio_speaker=speaker_name,
+        speaker_type=speaker_type
     )
+
+    if not audio_files:
+        return "No audio files generated. Check the section(s) for content."
+
+    return f"Generated audio files:\n" + "\n".join(audio_files)
 
 
 def get_selected_content(selected_title, sections):
@@ -206,16 +220,14 @@ with gr.Blocks() as Book2Audio:
         outputs=[section_preview]
     )
     tts_button.click(
-        log_and_generate_audio,  # Wrap `generate_audio` with a logging function
-        inputs=[
-            book_title,  # The title of the book
-            section_titles,  # The selected section title
-            sections_state,  # The state containing all sections
-            lang_dropdown,  # Language
-            studio_dropdown,  # Speaker name
-            speaker_type,  # Speaker type
-        ],
-        outputs=[generated_audio]
+        text_to_speech,  # Wrap `generate_audio` with a logging function
+        inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type],
+        outputs=[generated_audio]  # Optionally, you can display the list of generated audio files
+    )
+    process_btn.click(
+        process_file,
+        inputs=[file_input],
+        outputs=[book_title, section_titles, sections_state, section_preview, json_display]
     )
 
     clone_button.click(
