@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi.responses import FileResponse
 import os
 import subprocess
 import logging
@@ -26,7 +27,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 @app.post("/convert")
 async def convert(file: UploadFile):
-    """Converts a file to ODT format."""
+    """Converts a file to ODT format and returns the converted file."""
     input_path = os.path.join(UPLOAD_FOLDER, file.filename)
     output_path = os.path.join(OUTPUT_FOLDER, f"{os.path.splitext(file.filename)[0]}.odt")
     try:
@@ -58,10 +59,16 @@ async def convert(file: UploadFile):
         if not os.path.exists(output_path):
             raise HTTPException(status_code=500, detail="Output file not created")
 
-        return {"message": "Conversion successful", "output_path": output_path}
+        # Return the converted file in ODT format
+        return FileResponse(
+            output_path,
+            media_type="application/vnd.oasis.opendocument.text",
+            filename=os.path.basename(output_path)
+        )
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"Conversion failed: {e}")
     finally:
+        # Clean up input file to save space
         if os.path.exists(input_path):
             os.remove(input_path)
 

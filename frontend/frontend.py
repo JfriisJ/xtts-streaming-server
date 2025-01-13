@@ -1,4 +1,3 @@
-import json
 import os
 import logging
 
@@ -12,7 +11,7 @@ from text_service import extract_text_from_file
 os.makedirs('/app/logs', exist_ok=True)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.FileHandler("/app/logs/frontend_api.log"), logging.StreamHandler()]
 )
@@ -32,37 +31,28 @@ def update_connection_status():
 # File processing handler
 def process_file(file):
     if not file:
-        return "No file uploaded.", gr.update(choices=[]), None, "", ""
+        return "No file uploaded.", gr.update(choices=[]), None, ""
 
     try:
         logger.info(f"Processing file: {file.name}")
-        result = extract_text_from_file(file.name)  # Send file to text_service
-
-        # Extract title and sections
-        # Extract sections
         result = extract_text_from_file(file.name)
+
         book_title = result.get("title", file.name)
         sections = result.get("sections", [])
-        # title = result.get("title", file.name)
-        # sections = result.get("sections", [])
-        # section_titles = [section["title"] for section in sections]
+        section_titles = [book_title] + [section["title"] for section in sections]
 
         logger.debug(f"Extracted title: {book_title}")
         logger.debug(f"Extracted sections: {sections[:5]}")  # Log first few sections for clarity
-        # Add the book title at the top of the dropdown
-        section_titles = [book_title] + [section["title"] for section in sections]
 
-        # Update UI components
         return (
             book_title,
             gr.update(choices=section_titles),
             sections,
-            section_titles[0],
-            # json.dumps(result, indent=2)
+            section_titles[0]
         )
     except Exception as e:
         logger.error(f"Error processing file: {e}")
-        return f"Error: {e}", gr.update(choices=[]), None, "", ""
+        return f"Error: {e}", gr.update(choices=[]), None, ""
 
 
 
@@ -109,7 +99,7 @@ with gr.Blocks() as Book2Audio:
     # Update the UI with JSON viewer
     with gr.Tab("TTS"):
         with gr.Row():
-            file_input = gr.File(label="Upload ODT File", file_types=[".odt"])
+            file_input = gr.File(label="Upload File")
             speaker_type = gr.Radio(
                 label="Speaker Type",
                 choices=["Studio", "Cloned"],
