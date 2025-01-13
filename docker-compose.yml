@@ -8,7 +8,6 @@ services:
     ports:
       - "3009:3009"
     environment:
-      - AUDIO_SERVICE_API=http://text_to_speech:8003
       - TEXT_SERVICE_API=http://text_extraction:8001
       - CONVERTER_API=http://converter:5000
       - XTTS_SERVER_API=http://tts_server:80
@@ -20,31 +19,15 @@ services:
       - tts_outputs:/app/tts_outputs
     networks:
       - app_network
+    depends_on:
+      tts_server:
+        condition: service_healthy
     healthcheck:
       test: curl --fail http://localhost:3009 || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
 
-  text_to_speech:
-    container_name: text-to-speech
-    image: text-to-speech
-    build:
-      context: ./text_to_speech
-      dockerfile: Dockerfile
-    ports:
-      - "8003:8003"
-    environment:
-        - TTS_SERVER=http://tts_server:80
-    volumes:
-      - tts_logs:/app/logs
-    networks:
-      - app_network
-    healthcheck:
-      test:  curl --fail http://text_to_speech:8003/health || exit 1
-      interval: 30s
-      timeout: 10s
-      retries: 5
 
   text_extraction:
     container_name: text_extraction

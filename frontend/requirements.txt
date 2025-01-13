@@ -8,3 +8,5 @@ pydub
 uvicorn
 aiofiles
 ffmpeg-python
+tensorflow
+flax

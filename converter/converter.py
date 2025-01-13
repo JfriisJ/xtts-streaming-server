@@ -33,9 +33,20 @@ async def convert(file: UploadFile):
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
+        # Determine conversion method based on file extension
         if file.filename.endswith(".epub"):
             subprocess.run(
                 ["pandoc", input_path, "-f", "epub", "-t", "odt", "-o", output_path],
+                check=True
+            )
+        elif file.filename.endswith(".md"):
+            subprocess.run(
+                ["pandoc", input_path, "-f", "markdown", "-t", "odt", "-o", output_path],
+                check=True
+            )
+        elif file.filename.endswith(".html"):
+            subprocess.run(
+                ["pandoc", input_path, "-f", "html", "-t", "odt", "-o", output_path],
                 check=True
             )
         else:
@@ -53,6 +64,7 @@ async def convert(file: UploadFile):
     finally:
         if os.path.exists(input_path):
             os.remove(input_path)
+
 
 @app.get("/health")
 def health():
