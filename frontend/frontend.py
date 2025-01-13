@@ -12,7 +12,7 @@ from text_service import extract_text_from_file
 os.makedirs('/app/logs', exist_ok=True)
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.FileHandler("/app/logs/frontend_api.log"), logging.StreamHandler()]
 )
@@ -95,7 +95,7 @@ def speaker_type_change(speaker_type):
 
 
 # Frontend interface
-with gr.Blocks() as demo:
+with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
     # Connection status Textbox
     connection_status = gr.Textbox(label="Service Status", value="Checking...", interactive=False)
@@ -130,13 +130,13 @@ with gr.Blocks() as demo:
         with gr.Row():
             with gr.Column():
                 process_btn = gr.Button("Process File")
-                book_title = gr.Textbox(label="Book Title", value="")
-                section_titles = gr.Dropdown(label="Select Section", choices=[], interactive=True)
+                book_title = gr.Textbox(label="Book Title", value="Unknown Book", interactive=False)
+                section_titles = gr.Dropdown(label="Select Section", choices=[0], interactive=True)
                 # json_display = gr.Textbox(label="Full JSON Output", lines=20, interactive=False)  # New field for JSON
             section_preview = gr.Textbox(label="Section Content", lines=10, interactive=True)
         # TTS generation
         tts_button = gr.Button("Generate Audio")
-        generated_audio = gr.Audio(label="Generated audio", autoplay=True)
+        generated_audio = gr.Audio(label="Generated Audio", interactive=False)
 
     with gr.Tab("Clone a new speaker"):
         with gr.Row():
@@ -166,7 +166,7 @@ with gr.Blocks() as demo:
     tts_button.click(
         generate_audio,
         inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type],
-        outputs=[]
+        outputs=[generated_audio]
     )
     clone_button.click(
         fn=clone_speaker,
@@ -174,4 +174,4 @@ with gr.Blocks() as demo:
         outputs=[upload_file, clone_speaker_name, cloned_speaker_names, speaker_name_custom],
     )
 
-    demo.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")
+    Book2Audio.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")

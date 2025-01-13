@@ -4,7 +4,7 @@ import os
 import requests
 
 XTTS_SERVER_API = os.getenv("XTTS_SERVER_API", "http://localhost:8000")
-AUDIO_SERVICE_API = os.getenv("AUDIO_SERVICE_API", "http://localhost:8003")
+AUDIO_SERVICE_API = os.getenv("AUDIO_SERVICE_API", "http://localhost:8000")
 CONVERTER_API = os.getenv("CONVERTER_API", "http://localhost:5000")
 TEXT_SERVICE_API = os.getenv("TEXT_SERVICE_API", "http://localhost:8001")
 

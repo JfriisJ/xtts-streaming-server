@@ -66,23 +66,6 @@ def test_tts(text, lang, speaker_type, speaker_name_studio, speaker_name_custom,
         print(f"TTS request failed: {response.status_code} - {response.text}")
 
 #-------------------------------------------------------------------------------------------
-# Flatten Sections for Dropdown
-def flatten_sections(sections, prefix=""):
-    """
-    Flattens a hierarchical structure into a flat list with titles prefixed by their depth.
-    """
-    flat_list = []
-
-    def add_section(section, depth=1):
-        flat_list.append({"title": f"{prefix} {section['style']}: {section['title']}", "content": section["content"]})
-        for subsection in section.get("subsections", []):
-            add_section(subsection, depth + 1)
-
-    for section in sections:
-        add_section(section)
-
-    return flat_list
-
 
 def process_file(file):
     if file is None:
@@ -265,8 +248,7 @@ def get_aggregated_content(selected_title, sections, include_subsections=True):
 
     return "\n\n".join(filter(None, aggregated_content))
 
-def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None,
-                  output_format="wav"):
+def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):
     # Get the first line as the file name
     first_line = text.splitlines()[0] if text else "Untitled"
     file_name = clean_filename(first_line)

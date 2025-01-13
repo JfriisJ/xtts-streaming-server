@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 # Setup logging
 os.makedirs('/app/logs', exist_ok=True)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.FileHandler("/app/logs/text_to_speech.log"), logging.StreamHandler()]
 )
