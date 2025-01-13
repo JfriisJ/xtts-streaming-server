@@ -1,3 +1,4 @@
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, UploadFile, HTTPException
 import os
 import subprocess
@@ -5,6 +6,8 @@ import logging
 import zipfile
 from xml.etree.ElementTree import parse
 import re
+
+from md_2_json import parse_markdown_to_json
 
 # Setup logging
 os.makedirs('/app/logs', exist_ok=True)
@@ -29,109 +32,6 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # Markdown to JSON Parser
 
-def parse_markdown_to_json(markdown_content, remove_code_blocks=True, remove_tables=True):
-    """
-    Parse Markdown content into structured JSON with hierarchical levels.
-    - Removes Markdown formatting like `**`.
-    - Optionally removes code blocks and tables.
-    """
-    def clean_text(text):
-        """Removes Markdown formatting (e.g., `**`) from the text."""
-        return re.sub(r"\*\*(.*?)\*\*", r"\1", text).strip()
-
-    def is_table_line(line):
-        """
-        Checks if a line is part of a Markdown table.
-        A table line contains `|` and may also have `---` to define headers.
-        """
-        return "|" in line and not line.strip().startswith("```")
-
-    lines = markdown_content.strip().split("\n")
-    if not lines:
-        return {"Title": "", "Sections": []}
-
-    title = clean_text(lines[0].strip("# ").strip())
-    json_data = {"Title": title, "Sections": []}
-    current_section = None
-    current_subsection = None
-    in_code_block = False
-    in_table = False
-    code_block_lines = []
-
-    for line in lines[1:]:
-        stripped_line = line.strip()
-
-        # Handle code blocks
-        if stripped_line.startswith("```"):  # Toggle code block mode
-            in_code_block = not in_code_block
-            if not in_code_block:  # Closing a code block
-                if not remove_code_blocks:
-                    code_content = "\n".join(code_block_lines).strip()
-                    if current_subsection:
-                        current_subsection["Content"] += f"\n\n{code_content}" if current_subsection["Content"] else code_content
-                    elif current_section:
-                        current_section["Content"] += f"\n\n{code_content}" if current_section["Content"] else code_content
-                code_block_lines = []
-            continue
-
-        if in_code_block:
-            if not remove_code_blocks:
-                code_block_lines.append(line)
-            continue
-
-        # Handle tables
-        if remove_tables:
-            if is_table_line(stripped_line):
-                in_table = True
-                continue
-            elif in_table and not stripped_line:  # End of table
-                in_table = False
-                continue
-
-        # Skip empty lines and horizontal rules
-        if not stripped_line or stripped_line == "---":
-            continue
-
-        # Handle `#` as top-level sections
-        if stripped_line.startswith("# "):
-            if current_section:
-                if current_subsection:
-                    current_section["Subsections"].append(current_subsection)
-                    current_subsection = None
-                json_data["Sections"].append(current_section)
-            current_section = {"Heading": clean_text(stripped_line[2:].strip()), "Content": "", "Subsections": []}
-
-        # Handle `##` as mid-level sections
-        elif stripped_line.startswith("## "):
-            if current_subsection:
-                current_section["Subsections"].append(current_subsection)
-            current_subsection = {"Heading": clean_text(stripped_line[3:].strip()), "Content": "", "Subsections": []}
-
-        # Handle `###` as lowest-level sections
-        elif stripped_line.startswith("### "):
-            if current_subsection:
-                current_subsection["Subsections"].append({
-                    "Heading": clean_text(stripped_line[4:].strip()),
-                    "Content": []
-                })
-
-        # Add content to the current section or subsection
-        else:
-            cleaned_line = clean_text(stripped_line)
-            if current_subsection and current_subsection["Subsections"]:
-                current_subsection["Subsections"][-1]["Content"].append(cleaned_line)
-            elif current_subsection:
-                current_subsection["Content"] += f"\n{cleaned_line}" if current_subsection["Content"] else cleaned_line
-            elif current_section:
-                current_section["Content"] += f"\n{cleaned_line}" if current_section["Content"] else cleaned_line
-
-    # Append the last subsection and section
-    if current_subsection:
-        current_section["Subsections"].append(current_subsection)
-    if current_section:
-        json_data["Sections"].append(current_section)
-
-    return json_data
 
 
 # Extract text from ODT
@@ -181,6 +81,54 @@ def parse_odt_to_json(odt_file_path):
     except Exception as e:
         logger.error(f"Error extracting text from ODT file: {e}")
         raise HTTPException(status_code=500, detail="Error extracting text from ODT file.")
+
+def parse_epub_to_json(file_path):
+    """
+    Parse EPUB files into a structured JSON format.
+    """
+    try:
+        with zipfile.ZipFile(file_path, 'r') as epub_zip:
+            # Look for the main content file in the EPUB
+            container = epub_zip.read('META-INF/container.xml')
+            tree = parse(container)
+            root_file_path = tree.find('.//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile').attrib['full-path']
+            content = epub_zip.read(root_file_path).decode('utf-8')
+
+        return parse_html_to_json(content)
+
+    except Exception as e:
+        logger.error(f"Error parsing EPUB: {e}")
+        raise HTTPException(status_code=500, detail="Error parsing EPUB file.")
+
+def parse_html_to_json(html_content):
+    """
+    Parse HTML content into structured JSON.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
+    sections = []
+
+    def parse_section(tag, level=1):
+        section = {
+            "Heading": tag.get_text(strip=True),
+            "Content": "",
+            "Subsections": []
+        }
+        next_level_tags = tag.find_all(f'h{level + 1}')
+        for sub_tag in next_level_tags:
+            subsection = parse_section(sub_tag, level + 1)
+            section["Subsections"].append(subsection)
+        return section
+
+    # Identify the main headings (e.g., h1)
+    main_headings = soup.find_all('h1')
+    for heading in main_headings:
+        sections.append(parse_section(heading, 1))
+
+    return {
+        "Title": soup.title.string if soup.title else "Untitled",
+        "Sections": sections
+    }
+
 
 @app.post("/convert")
 async def convert(file: UploadFile):

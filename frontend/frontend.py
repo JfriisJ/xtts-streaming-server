@@ -222,7 +222,7 @@ with gr.Blocks() as Book2Audio:
     tts_button.click(
         text_to_speech,  # Wrap `generate_audio` with a logging function
         inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type],
-        outputs=[generated_audio]  # Optionally, you can display the list of generated audio files
+        outputs=[generated_audio]
     )
     process_btn.click(
         process_file,

@@ -53,58 +53,135 @@ if not os.path.exists(OUTPUT):
     os.mkdir(os.path.join(OUTPUT, "generated_audios"))
 
 
-import os
+def aggregate_section_with_subsections(section):
+    """
+    Aggregate content of a section and its subsections recursively.
+    """
+    content = section.get("Content", "")
+    if isinstance(content, list):
+        content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
+    elif isinstance(content, str):
+        content = content.strip()
+    else:
+        content = ""
 
-def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
-    logger.info(f"Starting audio generation for '{selected_title or book_title}'")
-    logger.debug(f"Input Sections: {json.dumps(sections, indent=2)}")
+    subsections = section.get("Subsections", [])
+    for subsection in subsections:
+        sub_heading = subsection.get("Heading", "").strip()
+        sub_content = aggregate_section_with_subsections(subsection)
+        if sub_heading:
+            content += f"\n\n{sub_heading}\n{sub_content}"
+
+    return content
+
+
+def split_text_into_tuples(sections):
+    """
+    Splits the book text into tuples of (index, section_name, content).
+    Ensures hierarchical indexes are accurate and all sections are processed.
+    """
+    tuples = []
+    section_counts = {}  # Track counts for each index prefix
+
+    def process_section(section, index_prefix=""):
+        heading = section.get("Heading", "").strip()
+        content = section.get("Content", "")
+
+        # Increment the count for the current index prefix
+        if index_prefix not in section_counts:
+            section_counts[index_prefix] = 1
+        else:
+            section_counts[index_prefix] += 1
+
+        # Generate hierarchical index
+        current_index = f"{index_prefix}{section_counts[index_prefix]}"
+
+        # Handle content as a list or string
+        if isinstance(content, list):
+            content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
+        elif isinstance(content, str):
+            content = content.strip()
+        else:
+            content = ""
+
+        # Combine section name and content
+        if content:
+            combined_content = f"{heading}\n\n{content}"  # Include section name followed by its content
+        else:
+            combined_content = heading  # Use section name only if no content exists
+
+        # Add the current section as a tuple
+        tuples.append((current_index, heading, combined_content))
+
+        # Process each subsection independently
+        subsections = section.get("Subsections", [])
+        for subsection in subsections:
+            process_section(subsection, index_prefix=f"{current_index}.")
+
+    # Process each top-level section
+    for section in sections:
+        process_section(section)
+
+    return tuples
+
+
+def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
+    """
+    Generates audio for each tuple and saves the files with names based on index and section name.
+    """
+    logger.info("Starting audio generation from tuples.")
     audio_files = []
 
-    if selected_title == book_title:
-        logger.info(f"Generating audio for the entire book '{book_title}'")
-        for section in sections:
-            heading = section.get("Heading", "Untitled Section")
-            content = get_aggregated_content(heading, [section])
-
-            if not content.strip():
-                logger.warning(f"Skipping empty section: {heading}")
-                continue
-
-            try:
-                file_name = f"{clean_filename(heading)}.{output_format}"
-                logger.debug(f"Generating audio for section '{heading}' with file name: {file_name}")
-                text_to_audio(
-                    text=content,
-                    heading=heading,
-                    lang=language,
-                    speaker_type=speaker_type,
-                    speaker_name_studio=studio_speaker,
-                    output_format=output_format
-                )
-                audio_files.append(file_name)
-            except Exception as e:
-                logger.error(f"Failed to generate audio for section '{heading}': {e}")
-    else:
-        logger.info(f"Generating audio for the selected section '{selected_title}'")
-        content = get_aggregated_content(selected_title, sections)
+    for section_index, section_name, content in tuples:
+        # Ensure no content is skipped
         if not content.strip():
-            logger.warning(f"No content found for the selected section: {selected_title}")
-            return None
+            logger.warning(f"Section '{section_name}' (Index: {section_index}) has no content.")
+            content = f"(No content for section '{section_name}')"
 
         try:
-            file_name = f"{clean_filename(selected_title)}.{output_format}"
-            logger.debug(f"Generating audio for section '{selected_title}' with file name: {file_name}")
-            text_to_audio(
+            logger.info(f"Generating audio for section '{section_name}' (Index: {section_index})")
+            logger.debug(f"Section content: {content[:500]}...")  # Log first 500 characters
+            file_path = text_to_audio(
                 text=content,
-                heading=selected_title,
+                heading=section_name,
+                section_index=section_index,  # Pass the hierarchical index
                 lang=language,
                 speaker_type=speaker_type,
                 speaker_name_studio=studio_speaker,
-                output_format=output_format
+                output_format=output_format,
             )
-            audio_files.append(file_name)
+            if file_path:
+                audio_files.append(file_path)
         except Exception as e:
-            logger.error(f"Failed to generate audio for section '{selected_title}': {e}")
+            logger.error(f"Error generating audio for section '{section_name}' (Index: {section_index}): {e}")
+
+    logger.info(f"Completed audio generation. Generated files: {audio_files}")
+    return audio_files
+
+
+def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
+    """
+    Splits the book into tuples and generates audio for each section.
+    Handles both whole book and single section generation.
+    """
+    if selected_title == book_title:
+        logger.info(f"Starting audio generation for the whole book: '{book_title}'")
+        tuples = split_text_into_tuples(sections)
+    else:
+        logger.info(f"Starting audio generation for the selected section: '{selected_title}'")
+        tuples = split_text_into_tuples([section for section in sections if section.get("Heading") == selected_title])
+
+    if not tuples:
+        logger.warning("No sections to process for audio generation.")
+        return None
+
+    audio_files = generate_audio_from_tuples(
+        tuples,
+        language=language,
+        studio_speaker=studio_speaker,
+        speaker_type=speaker_type,
+        output_format=output_format,
+    )
 
     if audio_files:
         logger.info(f"Generated audio files: {audio_files}")
@@ -175,19 +252,32 @@ def get_aggregated_content(selected_title, sections, include_subsections=True):
 
 
 
-def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):
-    logger.info(f"Converting text to audio for heading: '{heading}'")
+def text_to_audio(
+    text,
+    heading,
+    section_index,
+    lang="en",
+    speaker_type="Studio",
+    speaker_name_studio=None,
+    speaker_name_custom=None,
+    output_format="wav",
+):
+    logger.info(f"Converting text to audio for heading: '{heading}' (Index: {section_index})")
     logger.debug(f"Text to convert: {text[:100]}...")
-    file_name = clean_filename(heading)
+    # Combine index and heading for file name
+    file_name = clean_filename(f"{section_index}_{heading}")
     logger.debug(f"Generated file name: {file_name}")
 
-    embeddings = STUDIO_SPEAKERS.get(speaker_name_studio) if speaker_type == "Studio" else CLONED_SPEAKERS.get(speaker_name_custom)
+    embeddings = (
+        STUDIO_SPEAKERS.get(speaker_name_studio)
+        if speaker_type == "Studio"
+        else CLONED_SPEAKERS.get(speaker_name_custom)
+    )
     if not embeddings:
         logger.error(f"No embeddings found for speaker type '{speaker_type}' and speaker name.")
         return None
 
     logger.debug(f"Using embeddings: {embeddings}")
-
 
     # Process the text into smaller chunks
     chunks = split_text_into_chunks(text)
@@ -206,8 +296,8 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
                 "text": chunk,
                 "language": lang,
                 "speaker_embedding": embeddings["speaker_embedding"],
-                "gpt_cond_latent": embeddings["gpt_cond_latent"]
-            }
+                "gpt_cond_latent": embeddings["gpt_cond_latent"],
+            },
         )
         if response.status_code != 200:
             print(f"Error: Server returned status {response.status_code} for chunk: {chunk}")
@@ -221,12 +311,15 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
 
     if len(cached_audio_paths) > 0:
         combined_audio_path = concatenate_audios(cached_audio_paths, output_format)
-        final_path = os.path.join("outputs", "generated_audios", f"{file_name}.{output_format}")
+        final_path = os.path.join(OUTPUT, "generated_audios", f"{file_name}.{output_format}")
         os.rename(combined_audio_path, final_path)
         shutil.rmtree(cache_dir)
+        logger.info(f"Saved audio file: {final_path}")
         return final_path
     else:
         return None
+
+
 
 def concatenate_audios(audio_paths, output_format="wav"):
     """
