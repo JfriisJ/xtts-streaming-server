@@ -133,26 +133,33 @@ def parse_html_to_json(html_content):
 @app.post("/convert")
 async def convert(file: UploadFile):
     input_path = os.path.join(UPLOAD_FOLDER, file.filename)
-    output_path = os.path.join(OUTPUT_FOLDER, f"{os.path.splitext(file.filename)[0]}.odt")
 
     try:
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # Handle Markdown files directly
         if file.filename.endswith(".md"):
             with open(input_path, "r", encoding="utf-8") as md_file:
-                markdown_content = md_file.read()
-            json_output = parse_markdown_to_json(markdown_content)
-            return {"message": "Conversion successful", "json_output": json_output}
+                content = md_file.read()
+            json_output = parse_markdown_to_json(content)
 
-        # Handle other formats to ODT and parse
-        convert_to_odt(input_path, output_path, file.filename)
-        json_output = parse_odt_to_json(output_path)
+        elif file.filename.endswith(".epub"):
+            json_output = parse_epub_to_json(input_path)
+
+        elif file.filename.endswith(".html"):
+            with open(input_path, "r", encoding="utf-8") as html_file:
+                content = html_file.read()
+            json_output = parse_html_to_json(content)
+
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+
         return {"message": "Conversion successful", "json_output": json_output}
 
     except Exception as e:
+        logger.error(f"Error converting file: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {e}")
+
     finally:
         if os.path.exists(input_path):
             os.remove(input_path)
