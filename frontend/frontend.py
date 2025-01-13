@@ -58,7 +58,7 @@ def process_file(file):
             gr.update(choices=section_titles),
             sections,
             section_titles[0],
-            json.dumps(result, indent=2)
+            # json.dumps(result, indent=2)
         )
     except Exception as e:
         logger.error(f"Error processing file: {e}")

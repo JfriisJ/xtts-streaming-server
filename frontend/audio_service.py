@@ -2,14 +2,18 @@ import base64
 import json
 import logging
 import os
-import re
 import shutil
 import time
+from transformers import GPT2TokenizerFast
+import re
 
 import requests
 from pydub import AudioSegment
 
 from health_service import XTTS_SERVER_API
+
+# Initialize the tokenizer
+tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
 
 # Setup logging
 logging.basicConfig(
@@ -135,7 +139,14 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
     print(f"file_name: {file_name}")
 
     embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == "Studio" else CLONED_SPEAKERS[speaker_name_custom]
-    chunks = split_text_into_chunks(heading + "\n\n" + text)
+    # Add the heading as the first chunk
+    heading_chunk = heading.strip()
+
+    # Process the text into smaller chunks
+    text_chunks = split_text_into_chunks(text)
+
+    # Combine heading and text chunks
+    chunks = [heading_chunk] + text_chunks
 
     cache_dir = os.path.join("outputs", "cache")
     if not os.path.exists(cache_dir):
@@ -176,50 +187,75 @@ def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_
 
 def concatenate_audios(audio_paths, output_format="wav"):
     """
-    Kombinerer flere lydfiler til én og eksporterer i det valgte format.
+    Combines multiple audio files into one with added pauses for natural sound.
     """
     combined = AudioSegment.empty()
-    for path in audio_paths:
-        audio = AudioSegment.from_file(path)
-        combined += audio
+    pause_between_sentences = AudioSegment.silent(duration=500)  # 500ms pause
+    pause_between_heading_and_text = AudioSegment.silent(duration=1000)  # 1 second pause
 
+    for idx, path in enumerate(audio_paths):
+        audio = AudioSegment.from_file(path)
+
+        # Add a longer pause after the first chunk (assuming it's the heading)
+        if idx == 0:
+            combined += audio + pause_between_heading_and_text
+        else:
+            combined += audio + pause_between_sentences
+
+    # Remove the final pause
+    combined = combined[:-len(pause_between_sentences)]
+
+    # Export the combined audio
     output_path = os.path.join("outputs", "generated_audios", f"combined_audio_temp.{output_format}")
     combined.export(output_path, format=output_format)
     return output_path
 
 
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
-
-    sentences = re.split(r'(?<=\.) ', text)
+    """
+    Splits text into chunks based on character and token limits, breaking at sentence boundaries.
+    """
+    sentences = re.split(r'(?<=[.!?])\s+', text)  # Split by sentence-ending punctuation
     chunks = []
     current_chunk = ""
     current_tokens = 0
+
     for sentence in sentences:
-        sentence_tokens = len(sentence) // 4
-        if len(current_chunk) + len(sentence) <= max_chars and current_tokens + sentence_tokens <= max_tokens:
+        # Get the token count for the sentence
+        sentence_tokens = len(tokenizer.encode(sentence, add_special_tokens=False))
+
+        # If adding the sentence exceeds the limits, finalize the current chunk
+        if len(current_chunk) + len(sentence) > max_chars or current_tokens + sentence_tokens > max_tokens:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+                current_tokens = 0
+
+        # If the sentence itself is too large, split it
+        if len(sentence) > max_chars or sentence_tokens > max_tokens:
+            sentence_parts = [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
+            for part in sentence_parts:
+                part_tokens = len(tokenizer.encode(part, add_special_tokens=False))
+                if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
+                    current_chunk += part + " "
+                    current_tokens += part_tokens
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = part + " "
+                    current_tokens = part_tokens
+        else:
+            # Add the sentence to the current chunk
             current_chunk += sentence + " "
             current_tokens += sentence_tokens
-        else:
-            if len(sentence) > max_chars or sentence_tokens > max_tokens:
-                sentence_parts = [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
-                for part in sentence_parts:
-                    part_tokens = len(part) // 4
-                    if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
-                        current_chunk += part + " "
-                        current_tokens += part_tokens
-                    else:
-                        if current_chunk:
-                            chunks.append(current_chunk.strip())
-                        current_chunk = part + " "
-                        current_tokens = part_tokens
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = sentence + " "
-                current_tokens = sentence_tokens
-    if current_chunk:
+
+    # Add the last chunk if it's not empty
+    if current_chunk.strip():
         chunks.append(current_chunk.strip())
+
     return chunks
+
+
 
 
 def clean_filename(filename):
