@@ -118,6 +118,9 @@ def present_text_to_ui(result, file_name):
 
 
 def aggregate_section_content(selected_title, sections, include_subsections=True):
+    """
+    Aggregate content for the selected title and its subsections, including headings.
+    """
     logger.debug(f"Aggregating content for title: {selected_title}")
 
     aggregated_content = []
@@ -127,17 +130,21 @@ def aggregate_section_content(selected_title, sections, include_subsections=True
             logger.warning(f"Invalid section format at depth {depth}: {section}")
             return
 
-        # Match the selected title
         if section.get("Heading") == selected_title or include:
             include = True
-            logger.debug(f"Matched section: '{section.get('Heading', 'Untitled Section')}' at depth {depth}")
+            heading = section.get("Heading", "Untitled Section")
+            logger.debug(f"Matched section: '{heading}' at depth {depth}")
 
-        # Collect content
+            # Add the heading with proper formatting
+            aggregated_content.append(f"{'  ' * depth}{heading}")
+
         content = section.get("Content", "")
         if include and isinstance(content, str):
-            aggregated_content.append(content.strip())
+            # Add content with proper formatting
+            aggregated_content.append(f"{'  ' * (depth + 1)}{content.strip()}")
         elif include and isinstance(content, list):
-            aggregated_content.extend(item.strip() for item in content if isinstance(item, str))
+            # Handle list content
+            aggregated_content.extend(f"{'  ' * (depth + 1)}{item.strip()}" for item in content if isinstance(item, str))
 
         # Process subsections
         if include_subsections and include:
@@ -149,7 +156,8 @@ def aggregate_section_content(selected_title, sections, include_subsections=True
         collect_content(section)
 
     result = "\n\n".join(filter(None, aggregated_content))
-    logger.debug(f"Final aggregated content: {result[:500]}...")
+    logger.debug(f"Final aggregated content: {result[:500]}...")  # Log only the first 500 characters
     return result
+
 
 
