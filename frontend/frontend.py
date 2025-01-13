@@ -153,6 +153,23 @@ def update_speakers(speaker_type):
         return gr.update(choices=[], value=None)
 
 
+def log_and_generate_audio(book_title, selected_title, sections_state, language, speaker_name, speaker_type):
+    """
+    Logs the input data before passing it to the generate_audio function.
+    """
+    logger.info(f"Frontend -> Audio Service: Preparing to generate audio")
+    logger.debug(f"Book Title: {book_title}")
+    logger.debug(f"Selected Section Title: {selected_title}")
+    logger.debug(f"Language: {language}")
+    logger.debug(f"Speaker Type: {speaker_type}")
+    logger.debug(f"Speaker Name: {speaker_name}")
+    logger.debug(f"Sections State: {sections_state}")
+
+    return generate_audio(
+        book_title, selected_title, sections_state, language, speaker_name, speaker_type
+    )
+
+
 def get_selected_content(selected_title, sections):
     """
     Retrieve the content of the selected section or the entire book if the title is selected.
@@ -213,7 +230,7 @@ with gr.Blocks() as Book2Audio:
         outputs=[section_preview]
     )
     tts_button.click(
-        generate_audio,
+        log_and_generate_audio,  # Wrap `generate_audio` with a logging function
         inputs=[
             book_title,  # The title of the book
             section_titles,  # The selected section title
@@ -224,6 +241,7 @@ with gr.Blocks() as Book2Audio:
         ],
         outputs=[generated_audio]
     )
+
     clone_button.click(
         clone_speaker,
         inputs=[upload_file, clone_speaker_name],

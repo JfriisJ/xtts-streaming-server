@@ -17,7 +17,7 @@ tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -56,23 +56,23 @@ if not os.path.exists(OUTPUT):
 import os
 
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
-    logger.info(f"Generating audio for: {selected_title}")
-
-    if not selected_title:
-        logger.warning("No title selected for TTS.")
-        return None
-
-    if not sections:
-        logger.warning("No sections available for TTS.")
-        return None
+    logger.info(f"Audio Service: Starting audio generation for section '{selected_title}'")
+    logger.debug(f"Received Book Title: {book_title}")
+    logger.debug(f"Selected Section Title: {selected_title}")
+    logger.debug(f"Language: {language}")
+    logger.debug(f"Speaker Type: {speaker_type}")
+    logger.debug(f"Speaker Name: {studio_speaker}")
+    logger.debug(f"Sections Data: {sections}")
 
     aggregated_content = aggregate_section_content(selected_title, sections)
+    logger.debug(f"Aggregated Content: {aggregated_content}")
+
+    logger.debug(f"Aggregated content for section '{selected_title}': {aggregated_content}")
     if not aggregated_content:
-        logger.warning(f"No content found for section: {selected_title}")
+        logger.error("No aggregated content found. Cannot proceed with audio generation.")
         return None
 
     try:
-        logger.info(f"Generating audio for: {selected_title}")
         audio_path = text_to_audio(
             text=aggregated_content,
             heading=selected_title,
@@ -80,15 +80,12 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
             speaker_type=speaker_type,
             speaker_name_studio=studio_speaker
         )
-        if audio_path:
-            logger.info(f"Audio saved to: {audio_path}")
-            return audio_path
-        else:
-            logger.error("Audio generation failed.")
-            return None
+        logger.info(f"Audio generated successfully for section '{selected_title}'. Path: {audio_path}")
+        return audio_path
     except Exception as e:
-        logger.error(f"Error generating audio: {e}")
+        logger.error(f"Error generating audio for section '{selected_title}': {e}")
         return None
+
 
 
 
@@ -104,88 +101,134 @@ def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
 
 def aggregate_section_content(selected_title, sections, include_subsections=True):
     """
-    Aggregate content for the selected title and its subsections.
+    Aggregate content for the selected title and its subsections with enhanced logging for debugging.
     """
-    logger.debug(f"Aggregating content for title: {selected_title}")
-    logger.debug(f"Sections to aggregate: {sections}")
+    logger.debug(f"Starting aggregation for title: {selected_title}")
+    logger.debug(f"Input sections: {sections}")
 
     if not isinstance(sections, list):
-        logger.error("Expected `sections` to be a list.")
+        logger.error(f"Invalid input type for sections: {type(sections).__name__}. Expected list.")
         return "Invalid input: Sections must be a list."
 
     aggregated_content = []
 
     def collect_content(section, include, depth=0):
+        if not isinstance(section, dict):
+            logger.warning(f"Invalid section format at depth {depth}: {section}")
+            return
+
         indent = "  " * depth
+        logger.debug(f"{indent}Processing section: {section.get('Heading', 'Untitled Section')}")
+
         if section.get("Heading") == selected_title:
             include = True
-            logger.info(f"{indent}Matched section: '{section.get('Heading')}'")
+            logger.info(f"{indent}Matched section: '{section.get('Heading')}'. Including content.")
 
-        if include:
-            aggregated_content.append(section.get("Content", "").strip())
+        content = section.get("Content", "")
+        logger.debug(f"{indent}Content type: {type(content).__name__}. Content: {content}")
 
+        # Aggregate content based on its type
+        if isinstance(content, list):
+            try:
+                joined_content = "\n".join(content).strip()
+                aggregated_content.append(joined_content)
+                logger.debug(f"{indent}Aggregated list content: {joined_content}")
+            except Exception as e:
+                logger.error(f"{indent}Error processing list content: {e}")
+        elif isinstance(content, str):
+            aggregated_content.append(content.strip())
+            logger.debug(f"{indent}Aggregated string content: {content.strip()}")
+        else:
+            logger.warning(f"{indent}Unexpected content format: {content}")
+
+        # Process subsections if required
         if include_subsections:
             for subsection in section.get("Subsections", []):
-                collect_content(subsection, include, depth + 1)
+                if isinstance(subsection, dict):
+                    collect_content(subsection, include, depth + 1)
+                else:
+                    logger.warning(f"{indent}Unexpected subsection format at depth {depth + 1}: {subsection}")
 
-    for section in sections:
+    # Process each section in the list
+    for idx, section in enumerate(sections):
+        logger.debug(f"Processing section {idx + 1}/{len(sections)}: {section.get('Heading', 'Untitled Section')}")
         collect_content(section, include=False)
 
     result = "\n\n".join(filter(None, aggregated_content))
-    logger.debug(f"Aggregated content result: {result}")
+    logger.debug(f"Final aggregated content: {result}")
     return result
 
 
-
 def text_to_audio(text, heading, lang="en", speaker_type="Studio", speaker_name_studio=None, speaker_name_custom=None, output_format="wav"):
-    # Get the first line as the file name
+
+    logger.info(f"Audio Service: Converting text to audio for '{heading}'")
+    logger.debug(f"Text Content: {text[:100]}...")  # Log first 100 characters to avoid clutter
+    logger.debug(f"Language: {lang}")
+    logger.debug(f"Speaker Type: {speaker_type}")
+    logger.debug(f"Studio Speaker: {speaker_name_studio}")
+    logger.debug(f"Custom Speaker: {speaker_name_custom}")
+
     file_name = clean_filename(heading)
-    print(f"file_name: {file_name}")
+    logger.debug(f"Cleaned file name: {file_name}")
 
-    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == "Studio" else CLONED_SPEAKERS[speaker_name_custom]
-    # Add the heading as the first chunk
+    embeddings = STUDIO_SPEAKERS[speaker_name_studio] if speaker_type == "Studio" else CLONED_SPEAKERS.get(speaker_name_custom, {})
+    if not embeddings:
+        logger.error(f"Embeddings not found for speaker type: {speaker_type}, speaker: {speaker_name_studio or speaker_name_custom}")
+        return None
+
+    logger.debug(f"Using embeddings: {embeddings}")
+
     heading_chunk = heading.strip()
-
-    # Process the text into smaller chunks
     text_chunks = split_text_into_chunks(text)
 
-    # Combine heading and text chunks
     chunks = [heading_chunk] + text_chunks
-
     cache_dir = os.path.join("outputs", "cache")
-    if not os.path.exists(cache_dir):
-        os.mkdir(cache_dir)
-
-    print(f"cache_dir: {cache_dir}")
+    os.makedirs(cache_dir, exist_ok=True)
+    logger.debug(f"Cache directory: {cache_dir}")
 
     cached_audio_paths = []
     for idx, chunk in enumerate(chunks):
-        response = requests.post(
-            XTTS_SERVER_API + "/tts",
-            json={
-                "text": chunk,
-                "language": lang,
-                "speaker_embedding": embeddings["speaker_embedding"],
-                "gpt_cond_latent": embeddings["gpt_cond_latent"]
-            }
-        )
-        if response.status_code != 200:
-            print(f"Error: Server returned status {response.status_code} for chunk: {chunk}")
+        try:
+
+            logger.debug(f"Sending chunk to TTS API: {chunk[:50]}...")  # Log only the first 50 characters
+            response = requests.post(
+                XTTS_SERVER_API + "/tts",
+                json={
+                    "text": chunk,
+                    "language": lang,
+                    "speaker_embedding": embeddings["speaker_embedding"],
+                    "gpt_cond_latent": embeddings["gpt_cond_latent"]
+                }
+            )
+            logger.debug(f"TTS API Response: Status Code: {response.status_code}, Response Body: {response.text}")
+
+            if response.status_code != 200:
+                logger.error(f"TTS server error: {response.status_code}, Response: {response.text}")
+                return None
+
+            if response.status_code != 200:
+                logger.error(f"Error from TTS API: {response.status_code}, Response: {response.text}")
+                continue
+
+            decoded_audio = base64.b64decode(response.content)
+            audio_path = os.path.join(cache_dir, f"{file_name}_{idx + 1}.wav")
+            with open(audio_path, "wb") as fp:
+                fp.write(decoded_audio)
+                cached_audio_paths.append(audio_path)
+            logger.info(f"Saved audio chunk to: {audio_path}")
+        except Exception as e:
+            logger.error(f"Error processing chunk {idx}: {e}")
             continue
 
-        decoded_audio = base64.b64decode(response.content)
-        audio_path = os.path.join(cache_dir, f"{file_name}_{idx + 1}.wav")
-        with open(audio_path, "wb") as fp:
-            fp.write(decoded_audio)
-            cached_audio_paths.append(audio_path)
-
-    if len(cached_audio_paths) > 0:
+    if cached_audio_paths:
         combined_audio_path = concatenate_audios(cached_audio_paths, output_format)
         final_path = os.path.join("outputs", "generated_audios", f"{file_name}.{output_format}")
         os.rename(combined_audio_path, final_path)
         shutil.rmtree(cache_dir)
+        logger.info(f"Final audio saved to: {final_path}")
         return final_path
     else:
+        logger.error("No audio chunks generated.")
         return None
 
 
