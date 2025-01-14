@@ -117,10 +117,17 @@ def convert_pdf_to_html(pdf_path, output_dir):
         logger.error(f"LibreOffice conversion failed: {e}")
         raise RuntimeError(f"LibreOffice conversion failed: {e}")
 
+
+import shutil
+
+
 def convert_odt_to_html(odt_path, output_dir):
     """
-    Convert an ODT file to HTML using LibreOffice and post-process the result.
+    Convert an ODT file to HTML using LibreOffice.
     """
+    if not shutil.which("libreoffice"):
+        raise RuntimeError("LibreOffice is not installed or not in PATH.")
+
     logger.debug(f"Starting ODT to HTML conversion for {odt_path}")
     try:
         subprocess.run(
@@ -131,17 +138,12 @@ def convert_odt_to_html(odt_path, output_dir):
         if not os.path.exists(html_path):
             logger.error(f"Conversion failed. HTML file not found: {html_path}")
             raise RuntimeError(f"Conversion failed. HTML file not found: {html_path}")
-
-        # Post-process the HTML to standardize and clean
-        cleaned_html = post_process_html(html_path)
-        with open(html_path, "w", encoding="utf-8") as file:
-            file.write(cleaned_html)
-
-        logger.info(f"ODT to HTML conversion and post-processing successful: {html_path}")
+        logger.info(f"ODT to HTML conversion successful: {html_path}")
         return html_path
     except subprocess.CalledProcessError as e:
         logger.error(f"LibreOffice conversion failed: {e}")
         raise RuntimeError(f"LibreOffice conversion failed: {e}")
+
 
 def post_process_html(html_path):
     """

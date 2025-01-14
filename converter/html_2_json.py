@@ -3,6 +3,7 @@ import os
 import zipfile
 from xml.etree.ElementTree import parse
 from bs4 import BeautifulSoup
+from io import StringIO
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -50,8 +51,10 @@ def parse_epub_to_json(file_path):
             if 'META-INF/container.xml' not in epub_zip.namelist():
                 raise RuntimeError("Missing container.xml in EPUB file.")
 
+
+
             container = epub_zip.read('META-INF/container.xml').decode('utf-8')
-            tree = parse(container)
+            tree = parse(StringIO(container))  # Wrap the content in StringIO
             root_file_path = tree.find('.//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile').attrib['full-path']
 
             if root_file_path not in epub_zip.namelist():
