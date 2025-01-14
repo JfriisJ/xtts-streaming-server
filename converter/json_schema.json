@@ -35,7 +35,67 @@
             "type": "array",
             "description": "An array of subsections within the section.",
             "items": {
-              "$ref": "#/definitions/section"
+              "type": "object",
+              "properties": {
+                "Heading": {
+                  "type": "string",
+                  "description": "The heading of the subsection."
+                },
+                "Content": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "description": "The content of the subsection as a string."
+                    },
+                    {
+                      "type": "array",
+                      "description": "The content of the subsection as an array of strings.",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "Subsections": {
+                  "type": "array",
+                  "description": "An array of subsubsections within the subsection.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "Heading": {
+                        "type": "string",
+                        "description": "The heading of the subsubsection."
+                      },
+                      "Content": {
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "description": "The content of the subsubsection as a string."
+                          },
+                          {
+                            "type": "array",
+                            "description": "The content of the subsubsection as an array of strings.",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        ]
+                      },
+                      "Subsections": {
+                        "type": "array",
+                        "description": "An array of subsubsubsections within the subsubsection.",
+                        "items": {
+                          "$ref": "#/definitions/section"
+                        }
+                      }
+                    },
+                    "required": ["Heading"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["Heading"],
+              "additionalProperties": false
             }
           }
         },

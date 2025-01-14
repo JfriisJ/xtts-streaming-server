@@ -1,4 +1,9 @@
 fastapi
-uvicorn
+uvicorn[standard]
+beautifulsoup4
+lxml
+jsonschema
+xmltodict
 python-multipart
-bs4
+pdfminer.six
+pytest

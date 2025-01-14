@@ -1,106 +1,82 @@
+import logging
+
 import re
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 def parse_markdown_to_json(markdown_content, remove_code_blocks=True, remove_tables=True):
     """
-    Parse Markdown content into structured JSON with hierarchical levels.
-    - Removes Markdown formatting like `**`.
-    - Optionally removes code blocks and tables.
+    Map Markdown headings and content into a JSON structure following the schema.
+    Supports removing code blocks and tables if specified.
+    Handles deep nesting like Subsubsubsections.
     """
     def clean_text(text):
-        """Removes Markdown formatting (e.g., `**`) from the text."""
+        """Removes Markdown formatting."""
         return re.sub(r"\*\*(.*?)\*\*", r"\1", text).strip()
 
     def is_table_line(line):
-        """
-        Checks if a line is part of a Markdown table.
-        A table line contains `|` and may also have `---` to define headers.
-        """
+        """Checks if a line is part of a Markdown table."""
         return "|" in line and not line.strip().startswith("```")
 
-    lines = markdown_content.strip().split("\n")
-    if not lines:
-        return {"Title": "", "Sections": []}
+    # Initialize the JSON structure
+    json_output = {"Title": "", "Sections": []}
+    section_stack = []  # Stack to maintain the current section hierarchy
+    in_code_block = False  # Track code block status
 
-    title = clean_text(lines[0].strip("# ").strip())
-    json_data = {"Title": title, "Sections": []}
-    current_section = None
-    current_subsection = None
-    in_code_block = False
-    in_table = False
-    code_block_lines = []
-
-    for line in lines[1:]:
+    lines = markdown_content.splitlines()
+    for line in lines:
         stripped_line = line.strip()
 
-        # Handle code blocks
-        if stripped_line.startswith("```"):  # Toggle code block mode
-            in_code_block = not in_code_block
-            if not in_code_block:  # Closing a code block
-                if not remove_code_blocks:
-                    code_content = "\n".join(code_block_lines).strip()
-                    if current_subsection:
-                        current_subsection["Content"] += f"\n\n{code_content}" if current_subsection["Content"] else code_content
-                    elif current_section:
-                        current_section["Content"] += f"\n\n{code_content}" if current_section["Content"] else code_content
-                code_block_lines = []
+        # Skip empty lines
+        if not stripped_line:
             continue
 
-        if in_code_block:
-            if not remove_code_blocks:
-                code_block_lines.append(line)
-            continue
+        # Handle code blocks
+        if stripped_line.startswith("```"):
+            in_code_block = not in_code_block  # Toggle code block mode
+            if remove_code_blocks:
+                continue  # Skip code block lines entirely
+        if in_code_block and remove_code_blocks:
+            continue  # Skip all lines within code blocks
 
         # Handle tables
-        if remove_tables:
-            if is_table_line(stripped_line):
-                in_table = True
-                continue
-            elif in_table and not stripped_line:  # End of table
-                in_table = False
-                continue
+        if remove_tables and is_table_line(stripped_line):
+            continue  # Skip table lines
 
-        # Skip empty lines and horizontal rules
-        if not stripped_line or stripped_line == "---":
-            continue
+        # Detect headings
+        heading_match = re.match(r"^(#+)\s+(.*)", stripped_line)
+        if heading_match:
+            level = len(heading_match.group(1))  # Number of '#' determines the level
+            heading = clean_text(heading_match.group(2))
 
-        # Handle `#` as top-level sections
-        if stripped_line.startswith("# "):
-            if current_section:
-                if current_subsection:
-                    current_section["Subsections"].append(current_subsection)
-                    current_subsection = None
-                json_data["Sections"].append(current_section)
-            current_section = {"Heading": clean_text(stripped_line[2:].strip()), "Content": "", "Subsections": []}
+            # Create a new section object
+            new_section = {"Heading": heading, "Content": "", "Subsections": []}
 
-        # Handle `##` as mid-level sections
-        elif stripped_line.startswith("## "):
-            if current_subsection:
-                current_section["Subsections"].append(current_subsection)
-            current_subsection = {"Heading": clean_text(stripped_line[3:].strip()), "Content": "", "Subsections": []}
+            # Determine where to insert the new section
+            while section_stack and section_stack[-1]['level'] >= level:
+                section_stack.pop()  # Pop sections at the same or higher level
 
-        # Handle `###` as lowest-level sections
-        elif stripped_line.startswith("### "):
-            if current_subsection:
-                current_subsection["Subsections"].append({
-                    "Heading": clean_text(stripped_line[4:].strip()),
-                    "Content": []
-                })
+            if not section_stack:
+                # Top-level section
+                json_output["Sections"].append(new_section)
+            else:
+                # Add as a subsection
+                section_stack[-1]["section"]["Subsections"].append(new_section)
 
-        # Add content to the current section or subsection
+            # Push the new section onto the stack
+            section_stack.append({"level": level, "section": new_section})
         else:
-            cleaned_line = clean_text(stripped_line)
-            if current_subsection and current_subsection["Subsections"]:
-                current_subsection["Subsections"][-1]["Content"].append(cleaned_line)
-            elif current_subsection:
-                current_subsection["Content"] += f"\n{cleaned_line}" if current_subsection["Content"] else cleaned_line
-            elif current_section:
-                current_section["Content"] += f"\n{cleaned_line}" if current_section["Content"] else cleaned_line
+            # Add content to the most recent section
+            if section_stack:
+                current_section = section_stack[-1]["section"]
+                if current_section["Content"]:
+                    current_section["Content"] += "\n" + stripped_line
+                else:
+                    current_section["Content"] = stripped_line
 
-    # Append the last subsection and section
-    if current_subsection:
-        current_section["Subsections"].append(current_subsection)
-    if current_section:
-        json_data["Sections"].append(current_section)
+    # Set the title as the first heading if no explicit title exists
+    if json_output["Sections"]:
+        json_output["Title"] = json_output["Sections"][0]["Heading"]
 
-    return json_data
+    return json_output
