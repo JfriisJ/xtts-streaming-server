@@ -10,11 +10,15 @@ services:
     environment:
       - CONVERTER_API=http://converter:5000
       - XTTS_SERVER_API=http://tts_server:80
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     networks:
       - app_network
     depends_on:
       tts_server:
         condition: service_healthy
+      redis:
+        condition: service_started
     healthcheck:
       test: curl --fail http://localhost:3009 || exit 1
       interval: 30s
@@ -54,24 +58,35 @@ services:
     restart: unless-stopped
     volumes:
       - tts_server_models:/app/tts_models
+      - tts_logs:/app/logs
+      - tts_outputs:/app/outputs
     networks:
       - app_network
     healthcheck:
-      test:  curl --fail http://tts_server:80/health || exit 1
+      test: curl --fail http://tts_server:80/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
+
+  redis:
+    container_name: redis
+    image: redis:latest
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - app_network
 
 volumes:
   tts_server_models:
     driver: local
   tts_logs:
     driver: local
+  tts_outputs:
+    driver: local
   converter_uploads:
     driver: local
   converter_outputs:
-    driver: local
-  tts_outputs:
     driver: local
 
 networks:

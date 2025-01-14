@@ -58,6 +58,7 @@ def parse_epub_to_json(file_path):
 @app.post("/convert")
 async def convert(file: UploadFile):
     input_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    logger.info(f"Converting file: {file.filename}")
 
     try:
         with open(input_path, "wb") as f:

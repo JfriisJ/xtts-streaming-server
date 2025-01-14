@@ -81,25 +81,37 @@ def split_text_into_tuples(sections):
     Ensures hierarchical indexes follow a consistent 4-level pattern.
     """
     tuples = []
-    section_counts = {}  # Track counts for each index prefix
+    section_counts = {}  # Track counts for each hierarchical level
 
-    def process_section(section, index_prefix="1.0.0.0"):
-        heading = section.get("Heading", "").strip()
-        content = section.get("Content", "")
-
-        # Increment the count for the current index prefix
+    def process_section(section, level=1, index_prefix="1.0.0.0"):
+        """
+        Recursively processes sections and generates hierarchical indexes with consistent 4-level depth.
+        """
+        # Increment the count for the current level
         if index_prefix not in section_counts:
             section_counts[index_prefix] = 0
         section_counts[index_prefix] += 1
 
-        # Generate hierarchical index
-        parts = index_prefix.split(".")
-        if len(parts) < 4:
-            parts.extend(["0"] * (4 - len(parts)))  # Ensure 4 parts
-        parts[-1] = str(section_counts[index_prefix])  # Update the last part
-        current_index = ".".join(parts)
+        # Generate the next index
+        index_parts = index_prefix.split(".")
+        if level <= len(index_parts):
+            index_parts[level - 1] = str(section_counts[index_prefix])
+        else:
+            index_parts.extend(['0'] * (level - len(index_parts) - 1))
+            index_parts.append(str(section_counts[index_prefix]))
 
-        # Handle content as a list or string
+        # Ensure the index has exactly 4 levels
+        while len(index_parts) < 4:
+            index_parts.append("0")
+
+        # Reconstruct the index as a string
+        current_index = ".".join(index_parts[:4])
+
+        # Extract section details
+        heading = section.get("Heading", "").strip()
+        content = section.get("Content", "")
+
+        # Handle content as a string or list
         if isinstance(content, list):
             content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
         elif isinstance(content, str):
@@ -109,23 +121,24 @@ def split_text_into_tuples(sections):
 
         # Combine section name and content
         if content:
-            combined_content = f"{heading}\n\n{content}"  # Include section name followed by its content
+            combined_content = f"{heading}\n\n{content}"  # Include section name followed by content
         else:
             combined_content = heading  # Use section name only if no content exists
 
         # Add the current section as a tuple
         tuples.append((current_index, heading, combined_content))
 
-        # Process each subsection independently
+        # Process subsections recursively
         subsections = section.get("Subsections", [])
         for subsection in subsections:
-            process_section(subsection, index_prefix=current_index)
+            process_section(subsection, level + 1, current_index)
 
     # Process each top-level section
     for section in sections:
         process_section(section)
 
     return tuples
+
 
 
 def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
