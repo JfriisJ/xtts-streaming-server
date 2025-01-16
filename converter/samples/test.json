@@ -1,0 +1,85 @@
+{
+  "Title": "Main Title",
+  "Sections": [
+    {
+      "Heading": "Main Title",
+      "Content": "",
+      "Subsections": [
+        {
+          "Heading": "Section 1",
+          "Content": "This is a paragraph content within Section 1.",
+          "Subsections": [
+            {
+              "Heading": "Subsection 1.1",
+              "Content": "This subsection has a string content.",
+              "Subsections": [
+                {
+                  "Heading": "Subsubsection 1.1.1",
+                  "Content": "This subsubsection has content represented as a list:\n- Item 1\n- Item 2\n- Item 3",
+                  "Subsections": [
+                    {
+                      "Heading": "Subsubsubsection 1.1.1.1",
+                      "Content": "This subsubsubsection has a single paragraph content.",
+                      "Subsections": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "Heading": "Subsection 1.2",
+              "Content": "This subsection has another paragraph content.",
+              "Subsections": []
+            }
+          ]
+        },
+        {
+          "Heading": "Section 2",
+          "Content": "This section has content as a list:\n1. First item\n2. Second item\n3. Third item",
+          "Subsections": [
+            {
+              "Heading": "Subsection 2.1",
+              "Content": "Another string content for this subsection.",
+              "Subsections": [
+                {
+                  "Heading": "Subsubsection 2.1.1",
+                  "Content": "A string content at this level.",
+                  "Subsections": [
+                    {
+                      "Heading": "Subsubsubsection 2.1.1.1",
+                      "Content": "Content represented as a list:\n- Bullet 1\n- Bullet 2",
+                      "Subsections": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "Heading": "Section 3",
+          "Content": "This section has mixed content:\n- **Bold item**\n- *Italic item*\n- `Inline code item`",
+          "Subsections": [
+            {
+              "Heading": "Subsection 3.1",
+              "Content": "",
+              "Subsections": [
+                {
+                  "Heading": "Subsubsection 3.1.1",
+                  "Content": "This subsubsection contains:\n1. **Ordered list item 1**\n2. *Ordered list item 2*\n3. `Ordered list item 3`",
+                  "Subsections": [
+                    {
+                      "Heading": "Subsubsubsection 3.1.1.1",
+                      "Content": "Plain paragraph content for this deepest level.",
+                      "Subsections": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,9 +1,16 @@
 fastapi
 uvicorn[standard]
-beautifulsoup4
 lxml
 jsonschema
 xmltodict
 python-multipart
 pdfminer.six
 pytest
+pdfplumber
+ebooklib
+beautifulsoup4
+pandas
+python-docx
+odfpy
+markdownify
+PyMuPDF

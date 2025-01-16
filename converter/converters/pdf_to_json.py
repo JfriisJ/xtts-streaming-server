@@ -1,10 +1,32 @@
 import pdfplumber
 import re
-import json
 import logging
+import fitz  # PyMuPDF
+from matplotlib.font_manager import json_dump
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def extract_headers_with_pymupdf(file_path):
+    """
+    Extract headers using PyMuPDF based on font size.
+
+    Args:
+        file_path (str): Path to the PDF file.
+
+    Returns:
+        list: A list of detected headers.
+    """
+    doc = fitz.open(file_path)
+    headers = []
+    for page in doc:
+        blocks = page.get_text("dict")["blocks"]
+        for block in blocks:
+            for line in block["lines"]:
+                for span in line["spans"]:
+                    if span["size"] > 12:  # Assume headers have larger font sizes
+                        headers.append(span["text"].strip())
+    return headers
 
 def format_content(content):
     """
@@ -16,9 +38,19 @@ def format_content(content):
     Returns:
         str: Formatted content.
     """
+    # Format list items
+    content = re.sub(r"(?<!\S)-(\s*)", r"- ", content)  # Fix bullet lists
+    content = re.sub(r"(\d+)\.\s*", r"\1. ", content)  # Fix ordered lists
+
+    # Format inline styles
     content = re.sub(r"\*\*(.*?)\*\*", r"**\1**", content)  # Bold
     content = re.sub(r"(?<!\*)\*(.*?)\*(?!\*)", r"*\1*", content)  # Italic
     content = re.sub(r"`(.*?)`", r"`\1`", content)  # Inline code
+
+    # Ensure proper line breaks
+    content = re.sub(r"\s*-\s*", r"\n- ", content)  # Add newlines before bullet lists
+    content = re.sub(r"(\d+\.\s+.*?)(?=\d+\.\s|$)", r"\1\n", content, flags=re.DOTALL)  # Newline for ordered lists
+
     return content.strip()
 
 def parse_sections(lines):
@@ -60,12 +92,22 @@ def parse_sections(lines):
             current_subsection = {"Heading": line.strip(), "Content": "", "Subsections": []}
         elif re.match(r"^Subsubsection \d+", line):
             # Split heading and content if applicable
-            match = re.match(r"^(Subsubsection \d+)(.*)$", line)
-            heading = match.group(1).strip()
-            content = match.group(2).strip()
-            current_subsubsection = {"Heading": heading, "Content": format_content(content), "Subsections": []}
+            match = re.match(r"^(Subsubsection \d+\.\d+\.\d+)\s*(.*)$", line)
+            if match:
+                heading = match.group(1).strip()
+                content = match.group(2).strip()
+                current_subsubsection = {"Heading": heading, "Content": format_content(content), "Subsections": []}
+            else:
+                logging.warning(f"Could not parse Subsubsection line: {line}")
         elif re.match(r"^Subsubsubsection \d+", line):
-            current_subsubsubsection = {"Heading": line.strip(), "Content": "", "Subsections": []}
+            # Split heading and content for subsubsubsection
+            match = re.match(r"^(Subsubsubsection \d+\.\d+\.\d+\.\d+)\s*(.*)$", line)
+            if match:
+                heading = match.group(1).strip()
+                content = match.group(2).strip()
+                current_subsubsubsection = {"Heading": heading, "Content": format_content(content), "Subsections": []}
+            else:
+                logging.warning(f"Could not parse Subsubsubsection line: {line}")
         elif current_subsubsubsection:
             current_subsubsubsection["Content"] += format_content(line) + "\n"
         elif current_subsubsection:
@@ -81,7 +123,7 @@ def parse_sections(lines):
 
     return sections
 
-def pdf_to_json(file_path):
+def pdf_to_json(content):
     """
     Convert a PDF file to a structured JSON format.
 
@@ -92,7 +134,11 @@ def pdf_to_json(file_path):
         dict: A JSON-compatible dictionary containing the extracted text.
     """
     try:
-        with pdfplumber.open(file_path) as pdf:
+        # Extract headers with PyMuPDF
+        headers = extract_headers_with_pymupdf(content)
+        logging.info(f"Extracted headers: {headers}")
+
+        with pdfplumber.open(content) as pdf:
             title = "Main Title"  # Default title if not explicitly provided
             all_sections = []
 
@@ -115,23 +161,8 @@ def pdf_to_json(file_path):
             }]
         }
 
-        if result:
-            with open("output.json", "w") as f:
-                json.dump(result, f, indent=2)
-            print("Output saved to output.json")
-
         return result
 
     except Exception as e:
-        print(f"Error converting PDF to JSON: {e}")
-        logging.error(f"Error converting PDF to JSON: {e}")
+        logging.error(f"Error converting PDF to JSON: {e}", exc_info=True)
         return None
-
-if __name__ == "__main__":
-    # Example usage
-    file_path = "example.pdf"
-    result = pdf_to_json(file_path)
-    if result:
-        with open("output.json", "w") as f:
-            json.dump(result, f, indent=2)
-        print("Output saved to output.json")

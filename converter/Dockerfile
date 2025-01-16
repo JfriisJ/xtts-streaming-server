@@ -3,8 +3,6 @@ FROM python:3.9-slim
 
 # Install system dependencies for pandoc and libreoffice
 RUN apt-get update && apt-get install -y \
-    pandoc \
-    libreoffice \
     curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
