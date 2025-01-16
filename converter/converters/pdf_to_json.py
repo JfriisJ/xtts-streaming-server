@@ -1,14 +1,14 @@
 import pdfplumber
 import re
-import logging
 import json
+import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def format_content(content):
     """
-    Format content by detecting lists, bold, italic, and code.
+    Format content by detecting lists, bold, italic, and code, and ensuring proper line breaks.
 
     Args:
         content (str): Raw content text.
@@ -16,21 +16,9 @@ def format_content(content):
     Returns:
         str: Formatted content.
     """
-    # Format ordered lists
-    content = re.sub(r"^(\d+)\.\s", r"\1. ", content, flags=re.MULTILINE)  # Ordered list
-    # Format unordered lists
-    content = re.sub(r"^[-]\s", "- ", content, flags=re.MULTILINE)  # Unordered list
-    # Add line breaks after list items
-    content = re.sub(r"(\d+\.\s.*?)(?=\n\S|$)", r"\1\n", content, flags=re.MULTILINE)
-    content = re.sub(r"(-\s.*?)(?=\n\S|$)", r"\1\n", content, flags=re.MULTILINE)
-    # Bold
-    content = re.sub(r"\*\*(.*?)\*\*", r"**\1**", content)
-    # Italic
-    content = re.sub(r"\*(.*?)\*", r"*\1*", content)
-    # Inline code
-    content = re.sub(r"`(.*?)`", r"`\1`", content)
-    # Ensure proper line breaks for Markdown formatting
-    content = re.sub(r"(?<=\S)\n(?=\S)", "\n\n", content)  # Add breaks between lines
+    content = re.sub(r"\*\*(.*?)\*\*", r"**\1**", content)  # Bold
+    content = re.sub(r"(?<!\*)\*(.*?)\*(?!\*)", r"*\1*", content)  # Italic
+    content = re.sub(r"`(.*?)`", r"`\1`", content)  # Inline code
     return content.strip()
 
 def parse_sections(lines):
@@ -44,138 +32,54 @@ def parse_sections(lines):
         list: A structured list of sections and their content.
     """
     sections = []
-    excluded_content = []
     current_section = None
     current_subsection = None
     current_subsubsection = None
     current_subsubsubsection = None
 
     def append_to_parent():
-        """Appends the current item to its appropriate parent."""
         nonlocal current_section, current_subsection, current_subsubsection, current_subsubsubsection
-        if current_subsubsubsection and current_subsubsection:
-            print(f"Adding subsubsubsection: {current_subsubsubsection}")
-            current_subsubsection[2].append(current_subsubsubsection)
+        if current_subsubsubsection:
+            current_subsubsection["Subsections"].append(current_subsubsubsection)
             current_subsubsubsection = None
-        if current_subsubsection and current_subsection:
-            print(f"Adding subsubsection: {current_subsubsection}")
-            current_subsection[2].append(current_subsubsection)
+        if current_subsubsection:
+            current_subsection["Subsections"].append(current_subsubsection)
             current_subsubsection = None
-        if current_subsection and current_section:
-            print(f"Adding subsection: {current_subsection}")
-            current_section[2].append(current_subsection)
+        if current_subsection:
+            current_section["Subsections"].append(current_subsection)
             current_subsection = None
 
     for line in lines:
-        print(f"Processing line: {line}")  # Debugging output
         if re.match(r"^Section \d+", line):
             append_to_parent()
             if current_section:
-                print(f"Adding section: {current_section}")
                 sections.append(current_section)
-            current_section = (line, "", [], [], [])
-            print(f"Created new section: {current_section}")
+            current_section = {"Heading": line.strip(), "Content": "", "Subsections": []}
         elif re.match(r"^Subsection \d+", line):
             append_to_parent()
-            current_subsection = (line, "", [], [])
-            print(f"Created new subsection: {current_subsection}")
+            current_subsection = {"Heading": line.strip(), "Content": "", "Subsections": []}
         elif re.match(r"^Subsubsection \d+", line):
-            append_to_parent()
-            heading, _, content = line.partition(" This subsubsection has content represented as a list:")
-            current_subsubsection = (
-                heading.strip(),
-                format_content(content.strip()),
-                []
-            )
-            print(f"Created new subsubsection: {current_subsubsection}")
+            # Split heading and content if applicable
+            match = re.match(r"^(Subsubsection \d+)(.*)$", line)
+            heading = match.group(1).strip()
+            content = match.group(2).strip()
+            current_subsubsection = {"Heading": heading, "Content": format_content(content), "Subsections": []}
         elif re.match(r"^Subsubsubsection \d+", line):
-            heading, _, content = line.partition(" ")
-            current_subsubsubsection = (
-                heading.strip(),
-                format_content(content.strip()),
-                []
-            )
-            print(f"Created new subsubsubsection: {current_subsubsubsection}")
+            current_subsubsubsection = {"Heading": line.strip(), "Content": "", "Subsections": []}
         elif current_subsubsubsection:
-            current_subsubsubsection = (
-                current_subsubsubsection[0],
-                current_subsubsubsection[1] + format_content(line) + "\n",
-                current_subsubsubsection[2]
-            )
-            print(f"Updated subsubsubsection: {current_subsubsubsection}")
+            current_subsubsubsection["Content"] += format_content(line) + "\n"
         elif current_subsubsection:
-            current_subsubsection = (
-                current_subsubsection[0],
-                current_subsubsection[1] + format_content(line) + "\n",
-                current_subsubsection[2]
-            )
-            print(f"Updated subsubsection: {current_subsubsection}")
+            current_subsubsection["Content"] += format_content(line) + "\n"
         elif current_subsection:
-            current_subsection = (
-                current_subsection[0],
-                current_subsection[1] + line + "\n",
-                current_subsection[2],
-                current_subsection[3]
-            )
-            print(f"Updated subsection: {current_subsection}")
+            current_subsection["Content"] += format_content(line) + "\n"
         elif current_section:
-            current_section = (
-                current_section[0],
-                current_section[1] + line + "\n",
-                current_section[2],
-                current_section[3],
-                current_section[4]
-            )
-            print(f"Updated section: {current_section}")
-        else:
-            excluded_content.append(line)
+            current_section["Content"] += format_content(line) + "\n"
 
-    append_to_parent()  # Append any remaining items
+    append_to_parent()
     if current_section:
-        print(f"Adding section: {current_section}")
         sections.append(current_section)
 
-    if excluded_content:
-        logging.info(f"Excluded content: {excluded_content}")
-
     return sections
-
-def tuples_to_dicts(tuples):
-    """
-    Convert tuple-based hierarchical data to dictionary-based JSON structure.
-
-    Args:
-        tuples (tuple): Hierarchical data as tuples.
-
-    Returns:
-        dict: Dictionary representation of the data.
-    """
-    return {
-        "Heading": tuples[0],
-        "Content": tuples[1].strip(),
-        "Subsections": [
-            {
-                "Heading": sub[0],
-                "Content": sub[1].strip(),
-                "Subsections": [
-                    {
-                        "Heading": subsub[0],
-                        "Content": subsub[1].strip(),
-                        "Subsections": [
-                            {
-                                "Heading": subsubsub[0],
-                                "Content": subsubsub[1].strip(),
-                                "Subsections": []
-                            }
-                            for subsubsub in subsub[2]
-                        ]
-                    }
-                    for subsub in sub[2]
-                ]
-            }
-            for sub in tuples[2]
-        ]
-    }
 
 def pdf_to_json(file_path):
     """
@@ -188,26 +92,20 @@ def pdf_to_json(file_path):
         dict: A JSON-compatible dictionary containing the extracted text.
     """
     try:
-        logging.info(f"Converting PDF file: {file_path}")
-
         with pdfplumber.open(file_path) as pdf:
-            title = ""
+            title = "Main Title"  # Default title if not explicitly provided
             all_sections = []
 
             for i, page in enumerate(pdf.pages):
                 text = page.extract_text()
                 if text:
-                    if i == 0:  # Assuming the title is on the first page
-                        lines = text.splitlines()
-                        if lines:
-                            title = lines[0]  # Take the first line as the title
-                    sections = parse_sections(text.splitlines())
+                    lines = text.splitlines()
+                    if i == 0 and lines:
+                        title = lines[0].strip()  # First line as title
+                    sections = parse_sections(lines)
                     all_sections.extend(sections)
 
-        # Convert tuple-based structure to JSON-compatible dictionaries
-        all_sections = [tuples_to_dicts(section) for section in all_sections]
-
-        # Ensure Main Title has proper structure
+        # Ensure main structure matches the JSON schema
         result = {
             "Title": title,
             "Sections": [{
@@ -217,13 +115,23 @@ def pdf_to_json(file_path):
             }]
         }
 
-        logging.info("PDF conversion successful.")
-
-        # Print the JSON result
-        print(json.dumps(result, indent=2))
+        if result:
+            with open("output.json", "w") as f:
+                json.dump(result, f, indent=2)
+            print("Output saved to output.json")
 
         return result
 
     except Exception as e:
+        print(f"Error converting PDF to JSON: {e}")
         logging.error(f"Error converting PDF to JSON: {e}")
         return None
+
+if __name__ == "__main__":
+    # Example usage
+    file_path = "example.pdf"
+    result = pdf_to_json(file_path)
+    if result:
+        with open("output.json", "w") as f:
+            json.dump(result, f, indent=2)
+        print("Output saved to output.json")
