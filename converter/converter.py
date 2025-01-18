@@ -1,14 +1,14 @@
 from fastapi import FastAPI, UploadFile, HTTPException
 import os
 import logging
-import json
-from jsonschema import validate, ValidationError
-from file_format import convert_file
+from converters.md_to_json import md_to_json
+from spellcheck import process_json_content
+
 
 # Setup logging
 os.makedirs('/app/logs', exist_ok=True)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.FileHandler("/app/logs/converter.log"), logging.StreamHandler()]
 )
@@ -26,10 +26,6 @@ OUTPUT_FOLDER = "/app/outputs"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Load schema once globally
-with open("json_schema.json", "r") as f:
-    JSON_SCHEMA = json.load(f)
-
 
 @app.post("/convert")
 async def convert(file: UploadFile):
@@ -38,17 +34,24 @@ async def convert(file: UploadFile):
         file_extension = os.path.splitext(file.filename)[-1].lower()
         logger.debug(f"File extension detected: {file_extension}")
 
-        # Read the file content as bytes
-        # file_content = await file.read()
+        # Read the file content as bytes and decode
         content = (await file.read()).decode("utf-8")
-        json_content = convert_file(content, file_extension)
 
-        # Parse and validate
-        return json_content
+        # Convert Markdown to JSON
+        json_content = md_to_json(content)
+
+        # Process spell checking on JSON content
+        processed_content = process_json_content(json_content["Sections"])
+
+        logger.info(f"Spell-checked content: {processed_content}")
+
+        # Update JSON content with spell-checked data
+        json_content["Sections"] = processed_content
+
+        return json_content  # Return processed JSON content
     except Exception as e:
         logger.error(f"Error converting file {file.filename}: {e}")
         raise HTTPException(status_code=500, detail="Conversion failed.")
-
 
 
 @app.get("/health")
@@ -63,17 +66,4 @@ def health():
         logger.error(f"Health check failed: {e}")
         return {"status": "unhealthy", "error": str(e)}
 
-
-
-def parse_and_validate(content):
-    logger.info(f"Parsing and validating content.")
-
-    # Validate the JSON output
-    try:
-        # validate(instance=content, schema=JSON_SCHEMA)
-        logger.info("Validation successful!")
-        return content
-    except ValidationError as e:
-        logger.error(f"Validation failed: {e.message}")
-        raise ValueError(f"JSON validation failed: {e.message}")
 

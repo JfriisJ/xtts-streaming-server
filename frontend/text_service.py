@@ -2,6 +2,8 @@ import logging
 import os
 import requests
 from health_service import CONVERTER_API
+import json
+from matplotlib.font_manager import json_dump
 
 # Setup logging
 logging.basicConfig(
@@ -23,12 +25,8 @@ def extract_text_from_file(file_path):
 
         # Parse the JSON response
         result = response.json()
-        if "json_output" not in result:
-            logger.error(f"Unexpected response structure: {result}")
-            raise ValueError("Invalid response structure from converter service.")
-
-        logger.info("Successfully extracted text.")
-        return result["json_output"], os.path.basename(file_path)
+        logger.info(json.dumps(result, indent=4))
+        return result, os.path.basename(file_path)
 
     except requests.ConnectionError as e:
         logger.error("Failed to connect to the converter service.")

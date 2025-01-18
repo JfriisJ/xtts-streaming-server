@@ -116,6 +116,6 @@ if __name__ == "__main__":
     demo.launch(
         share=False,
         debug=False,
-        server_port=3009,
+        server_port=3008,
         server_name="0.0.0.0",
     )

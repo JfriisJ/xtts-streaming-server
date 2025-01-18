@@ -10,3 +10,4 @@ aiofiles
 ffmpeg-python
 tensorflow
 flax
+matplotlib
