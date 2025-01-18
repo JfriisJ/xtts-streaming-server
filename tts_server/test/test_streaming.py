@@ -107,7 +107,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    with open("./default_speaker.json", "r") as file:
+    with open("default_speaker.json", "r") as file:
         speaker = json.load(file)
 
     if args.ref_file is not None:

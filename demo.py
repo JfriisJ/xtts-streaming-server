@@ -100,7 +100,7 @@ with gr.Blocks() as demo:
 
 if __name__ == "__main__":
     print("Warming up server...")
-    with open("test/default_speaker.json", "r") as fp:
+    with open("tts_server/test/default_speaker.json", "r") as fp:
         warmup_speaker = json.load(fp)
     resp = requests.post(
         SERVER_URL + "/tts",
