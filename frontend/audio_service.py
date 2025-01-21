@@ -180,8 +180,7 @@ def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara
 
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
     """
-    Splits the book into tuples and generates audio for each section.
-    Handles both whole book and single section generation.
+    Splits the book into tuples and generates audio for each section in the specified format.
     """
     if selected_title == book_title:
         logger.info(f"Starting audio generation for the whole book: '{book_title}'")
@@ -209,6 +208,7 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
     else:
         logger.warning("No audio files generated.")
         return None
+
 
 
 

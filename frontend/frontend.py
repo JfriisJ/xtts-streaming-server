@@ -149,12 +149,12 @@ def update_speakers(speaker_type, current_selection=None):
 
 
 
-def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type):
+def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
     """
-    Logs the input data and generates audio for the selected title or entire book.
+    Logs the input data and generates audio for the selected title or entire book with the specified format.
     """
     logger.info(f"Generating audio for: {selected_title or book_title}")
-    logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}")
+    logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}, Format: {output_format}")
     logger.debug(f"Sections state: {json.dumps(sections_state, indent=2)}")
 
     sections = sections_state.get("Sections", [])
@@ -164,13 +164,15 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
         sections,
         language=language,
         studio_speaker=speaker_name,
-        speaker_type=speaker_type
+        speaker_type=speaker_type,
+        output_format=output_format  # Pass the selected format
     )
 
     if not audio_files:
         return "No audio files generated. Check the section(s) for content."
 
     return f"Generated audio files:\n" + "\n".join(audio_files)
+
 
 
 def get_selected_content(selected_title, sections):
@@ -198,6 +200,12 @@ with gr.Blocks() as Book2Audio:
             speaker_type = gr.Radio(label="Speaker Type", choices=["Studio", "Cloned"], value="Studio")
             studio_dropdown = gr.Dropdown(label="Speaker", choices=[], value=None)
             lang_dropdown = gr.Dropdown(label="Language", choices=LANGUAGES, value="en" if "en" in LANGUAGES else None)
+            output_format_dropdown = gr.Dropdown(
+                label="Output Format",
+                choices=["wav", "mp3"],
+                value="wav",
+                interactive=True
+            )  # New dropdown for format selection
 
         with gr.Row():
             with gr.Column():
@@ -216,7 +224,7 @@ with gr.Blocks() as Book2Audio:
         clone_button = gr.Button("Clone Speaker")
         cloned_speaker_dropdown = gr.Dropdown(label="Cloned Speaker", choices=list(CLONED_SPEAKERS.keys()), value=None)
 
-    # Bind events
+        # Bind events
     file_input.change(
         process_file,
         inputs=[file_input],
@@ -227,15 +235,15 @@ with gr.Blocks() as Book2Audio:
         inputs=[speaker_type],
         outputs=[studio_dropdown]
     )
-    # Update Gradio UI bindings
     section_titles.change(
         update_section_content,
         inputs=[book_title, section_titles, sections_state],
         outputs=[section_preview]
     )
     tts_button.click(
-        text_to_speech,  # Wrap `generate_audio` with a logging function
-        inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type],
+        text_to_speech,
+        inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type,
+                output_format_dropdown],  # Added format input
         outputs=[generated_audio]
     )
     process_btn.click(
