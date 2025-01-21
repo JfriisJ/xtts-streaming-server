@@ -151,7 +151,7 @@ def update_speakers(speaker_type, current_selection=None):
 
 def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
     """
-    Logs the input data and generates audio for the selected title or entire book with the specified format.
+    Generate audio for the selected title or entire book and return the paths for playback and download.
     """
     logger.info(f"Generating audio for: {selected_title or book_title}")
     logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}, Format: {output_format}")
@@ -165,13 +165,15 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
         language=language,
         studio_speaker=speaker_name,
         speaker_type=speaker_type,
-        output_format=output_format  # Pass the selected format
+        output_format=output_format
     )
 
     if not audio_files:
-        return "No audio files generated. Check the section(s) for content."
+        return "No audio files generated. Check the section(s) for content.", None
 
-    return f"Generated audio files:\n" + "\n".join(audio_files)
+    # Return the first audio file for playback and all files for download
+    return audio_files[0], audio_files
+
 
 
 
@@ -214,8 +216,11 @@ with gr.Blocks() as Book2Audio:
                 section_titles = gr.Dropdown(label="Select Section", choices=[], value=None, interactive=True)
             section_preview = gr.Textbox(label="Section Content", lines=20, interactive=False)
 
-        tts_button = gr.Button("Generate Audio")
-        generated_audio = gr.Audio(label="Generated Audio", interactive=False)
+        with gr.Row():
+            tts_button = gr.Button("Generate Audio")
+            generated_audio = gr.Audio(label="Generated Audio", interactive=False)  # For playback
+            download_links = gr.Files(label="Download Generated Audio")  # For downloads
+
         json_display = gr.Textbox(label="Full JSON Output", lines=20, interactive=False)
 
     with gr.Tab("Clone a Speaker"):
@@ -242,9 +247,11 @@ with gr.Blocks() as Book2Audio:
     )
     tts_button.click(
         text_to_speech,
-        inputs=[book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type,
-                output_format_dropdown],  # Added format input
-        outputs=[generated_audio]
+        inputs=[
+            book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type,
+            output_format_dropdown
+        ],
+        outputs=[generated_audio, download_links]  # Separate outputs for playback and download
     )
     process_btn.click(
         process_file,
