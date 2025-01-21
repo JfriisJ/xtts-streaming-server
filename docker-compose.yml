@@ -17,8 +17,8 @@ services:
     depends_on:
       tts_server:
         condition: service_healthy
-      redis:
-        condition: service_started
+#      redis:
+#        condition: service_started
     healthcheck:
       test: curl --fail http://localhost:3009 || exit 1
       interval: 30s
@@ -48,7 +48,7 @@ services:
     container_name: xtts-stream
     image: xtts-stream
     build:
-      context: ./tts_server
+      context: ./tts_server/TTS
       dockerfile: Dockerfile
     environment:
       COQUI_TOS_AGREED: "1"  # Required by Coqui TTS
@@ -68,14 +68,14 @@ services:
       timeout: 10s
       retries: 5
 
-  redis:
-    container_name: redis
-    image: redis:latest
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    networks:
-      - app_network
+#  redis:
+#    container_name: redis
+#    image: redis:latest
+#    restart: unless-stopped
+#    ports:
+#      - "6379:6379"
+#    networks:
+#      - app_network
 
 volumes:
   tts_server_models:

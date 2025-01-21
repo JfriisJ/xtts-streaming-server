@@ -1,5 +1,6 @@
 import base64
 import io
+import logging
 import os
 import tempfile
 import wave
@@ -15,6 +16,14 @@ from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
 from TTS.utils.generic_utils import get_user_data_dir
 from TTS.utils.manage import ModelManager
+
+os.makedirs('/app/logs', exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler("/app/logs/converter.log"), logging.StreamHandler()]
+)
+logger = logging.getLogger(__name__)
 
 torch.set_num_threads(int(os.environ.get("NUM_THREADS", os.cpu_count())))
 device = torch.device("cuda" if os.environ.get("USE_CPU", "0") == "0" else "cpu")

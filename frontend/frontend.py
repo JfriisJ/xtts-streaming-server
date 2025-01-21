@@ -31,7 +31,7 @@ def update_connection_status():
 
 def update_section_content(book_title, selected_title, sections_state):
     """
-    Display the pre-aggregated content for the book title or specific sections.
+    Display the pre-aggregated content for the book title, specific sections, or subsections.
     """
     logger.debug(f"Selected title: {selected_title}")
     logger.debug(f"Sections state provided: {sections_state}")
@@ -46,15 +46,22 @@ def update_section_content(book_title, selected_title, sections_state):
         logger.debug(f"Using pre-aggregated content for book title: {full_book_content[:500]}...")
         return full_book_content
 
-    # Find and display content for the selected section
+    # Traverse sections and subsections to find the selected title
     for section in sections_state.get("Sections", []):
         if section.get("Heading") == selected_title:
-            content = aggregate_section_content(selected_title, [section])
+            content = aggregate_section_content(selected_title, [section], include_subsections=True)
             logger.debug(f"Content for section '{selected_title}': {content[:500]}...")
             return content
 
-    logger.warning(f"No matching section found for title: {selected_title}")
-    return "No matching section found."
+        # Check for subsections
+        for subsection in section.get("Subsections", []):
+            if subsection.get("Heading") == selected_title:
+                content = aggregate_section_content(selected_title, [subsection], include_subsections=False)
+                logger.debug(f"Content for subsection '{selected_title}': {content[:500]}...")
+                return content
+
+    logger.warning(f"No matching section or subsection found for title: {selected_title}")
+    return "No matching section or subsection found."
 
 
 def process_file(file):
@@ -75,6 +82,12 @@ def process_file(file):
         # Aggregate content for the entire book
         sections = raw_result.get("Sections", [])
         full_book_content = aggregate_section_content(title, sections, include_subsections=True)
+
+        # Add subsection titles to the dropdown
+        for section in sections:
+            if "Subsections" in section:
+                for subsection in section["Subsections"]:
+                    section_titles.append(subsection.get("Heading"))
 
         # Ensure the book title is only included once
         if title not in section_titles:
@@ -214,6 +227,7 @@ with gr.Blocks() as Book2Audio:
         inputs=[speaker_type],
         outputs=[studio_dropdown]
     )
+    # Update Gradio UI bindings
     section_titles.change(
         update_section_content,
         inputs=[book_title, section_titles, sections_state],

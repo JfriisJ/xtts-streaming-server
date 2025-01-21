@@ -141,11 +141,13 @@ def split_text_into_tuples(sections):
 
 
 
-def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
+def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav",book_title="no-title"):
     """
-    Generates audio for each tuple and saves the files with names based on index and section name.
+    Generates audio for each tuple and saves the files in a folder named after the book_title.
     """
     logger.info("Starting audio generation from tuples.")
+
+
     audio_files = []
 
     for section_index, section_name, content in tuples:
@@ -165,6 +167,7 @@ def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara
                 speaker_type=speaker_type,
                 speaker_name_studio=studio_speaker,
                 output_format=output_format,
+                book_title=book_title
             )
             if file_path:
                 audio_files.append(file_path)
@@ -197,6 +200,7 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
         studio_speaker=studio_speaker,
         speaker_type=speaker_type,
         output_format=output_format,
+        book_title=book_title,
     )
 
     if audio_files:
@@ -277,12 +281,20 @@ def text_to_audio(
     speaker_name_studio=None,
     speaker_name_custom=None,
     output_format="wav",
+    book_title="no-title",
 ):
     logger.info(f"Converting text to audio for heading: '{heading}' (Index: {section_index})")
     logger.debug(f"Text to convert: {text[:100]}...")
-    # Combine index and heading for file name
+
+    # Clean the book title and ensure the directory exists
+    clean_book_title = clean_filename(book_title)
+    book_output_dir = os.path.join(OUTPUT, "generated_audios", clean_book_title)
+    os.makedirs(book_output_dir, exist_ok=True)
+
+    # Combine index and heading for the file name
     file_name = clean_filename(f"{section_index}_{heading}")
-    logger.debug(f"Generated file name: {file_name}")
+    file_path = os.path.join(book_output_dir, f"{file_name}.{output_format}")
+    logger.debug(f"Generated file path: {file_path}")
 
     embeddings = (
         STUDIO_SPEAKERS.get(speaker_name_studio)
@@ -298,11 +310,8 @@ def text_to_audio(
     # Process the text into smaller chunks
     chunks = split_text_into_chunks(text)
 
-    cache_dir = os.path.join("outputs", "cache")
-    if not os.path.exists(cache_dir):
-        os.mkdir(cache_dir)
-
-    print(f"cache_dir: {cache_dir}")
+    cache_dir = os.path.join(OUTPUT, "cache")
+    os.makedirs(cache_dir, exist_ok=True)
 
     cached_audio_paths = []
     for idx, chunk in enumerate(chunks):
@@ -316,51 +325,60 @@ def text_to_audio(
             },
         )
         if response.status_code != 200:
-            print(f"Error: Server returned status {response.status_code} for chunk: {chunk}")
+            logger.error(f"Error: Server returned status {response.status_code} for chunk: {chunk}")
             continue
 
         decoded_audio = base64.b64decode(response.content)
-        audio_path = os.path.join(cache_dir, f"{file_name}_{idx + 1}.wav")
-        with open(audio_path, "wb") as fp:
+        chunk_path = os.path.join(cache_dir, f"{file_name}_{idx + 1}.wav")
+        with open(chunk_path, "wb") as fp:
             fp.write(decoded_audio)
-            cached_audio_paths.append(audio_path)
+            cached_audio_paths.append(chunk_path)
 
     if len(cached_audio_paths) > 0:
-        combined_audio_path = concatenate_audios(cached_audio_paths, output_format)
-        final_path = os.path.join(OUTPUT, "generated_audios", f"{file_name}.{output_format}")
-        os.rename(combined_audio_path, final_path)
+        combined_audio_path = concatenate_audios(cached_audio_paths, output_format, clean_book_title)
+        shutil.move(combined_audio_path, file_path)
         shutil.rmtree(cache_dir)
-        logger.info(f"Saved audio file: {final_path}")
-        return final_path
+        logger.info(f"Saved audio file: {file_path}")
+        return file_path
     else:
+        logger.warning(f"No audio files generated for heading: '{heading}'")
         return None
 
 
 
-def concatenate_audios(audio_paths, output_format="wav"):
+
+def concatenate_audios(audio_paths, output_format="mp3", book_title="no-title", pauses=None):
     """
-    Combines multiple audio files into one with added pauses for natural sound.
+    Combines multiple audio files into one with configurable pauses and allows saving in different formats.
     """
+    if pauses is None:
+        pauses = {"sentence": 500, "heading": 1000}  # Default pauses in milliseconds
+
     combined = AudioSegment.empty()
-    pause_between_sentences = AudioSegment.silent(duration=500)  # 500ms pause
-    pause_between_heading_and_text = AudioSegment.silent(duration=1000)  # 1 second pause
+    pause_between_sentences = AudioSegment.silent(duration=pauses["sentence"])
+    pause_between_heading_and_text = AudioSegment.silent(duration=pauses["heading"])
 
     for idx, path in enumerate(audio_paths):
         audio = AudioSegment.from_file(path)
-
-        # Add a longer pause after the first chunk (assuming it's the heading)
         if idx == 0:
             combined += audio + pause_between_heading_and_text
         else:
             combined += audio + pause_between_sentences
 
-    # Remove the final pause
-    combined = combined[:-len(pause_between_sentences)]
+    combined = combined[:-len(pause_between_sentences)]  # Remove the final pause
 
-    # Export the combined audio
-    output_path = os.path.join("outputs", "generated_audios", f"combined_audio_temp.{output_format}")
-    combined.export(output_path, format=output_format)
-    return output_path
+    # Ensure the output folder exists
+    clean_book_title = clean_filename(book_title)
+    book_output_dir = os.path.join(OUTPUT, "generated_audios", clean_book_title)
+    os.makedirs(book_output_dir, exist_ok=True)
+
+    # Save the combined audio in the specified format
+    output_file_path = os.path.join(book_output_dir, f"combined_audio.{output_format}")
+    combined.export(output_file_path, format=output_format)
+    logger.info(f"Saved combined audio file: {output_file_path}")
+    return output_file_path
+
+
 
 
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):

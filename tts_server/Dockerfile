@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
@@ -20,4 +20,7 @@ ENV NVIDIA_DISABLE_REQUIRE=0
 
 ENV NUM_THREADS=2
 EXPOSE 80
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
+#EXPOSE 5002
+#EXPOSE 5003
+CMD ["uvicorn", "xtts:app", "--host", "0.0.0.0", "--port", "80"]
+#CMD ["uvicorn", "vits:app", "--host", "0.0.0.0", "--port", "5002"]

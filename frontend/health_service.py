@@ -6,6 +6,9 @@ import requests
 XTTS_SERVER_API = os.getenv("XTTS_SERVER_API", "http://localhost:8000")
 CONVERTER_API = os.getenv("CONVERTER_API", "http://localhost:5000")
 
+if not XTTS_SERVER_API:
+    XTTS_SERVER_API = "http://localhost:8000"
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
