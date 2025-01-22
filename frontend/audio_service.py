@@ -169,12 +169,33 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
     """
     Splits the book into tuples and generates audio for each section in the specified format.
     """
+    logger.info(f"Starting audio generation for the selected section: '{selected_title}'")
+
+    def find_selected_section(section_list, selected_title):
+        """
+        Recursively find the section or subsection matching the selected title.
+        """
+        for section in section_list:
+            if section.get("Heading") == selected_title:
+                return [section]  # Wrap in a list for compatibility with split_text_into_tuples
+            if "Subsections" in section:
+                result = find_selected_section(section["Subsections"], selected_title)
+                if result:
+                    return result
+        return None
+
     if selected_title == book_title:
-        logger.info(f"Starting audio generation for the whole book: '{book_title}'")
+        # Generate audio for the entire book
         tuples = split_text_into_tuples(sections)
     else:
-        logger.info(f"Starting audio generation for the selected section: '{selected_title}'")
-        tuples = split_text_into_tuples([section for section in sections if section.get("Heading") == selected_title])
+        # Find the matching section or subsection
+        selected_section = find_selected_section(sections, selected_title)
+        if not selected_section:
+            logger.warning(f"No matching section found for '{selected_title}'")
+            return None
+
+        # Generate audio for the selected section or subsection
+        tuples = split_text_into_tuples(selected_section)
 
     if not tuples:
         logger.warning("No sections to process for audio generation.")
@@ -195,8 +216,6 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
     else:
         logger.warning("No audio files generated.")
         return None
-
-
 
 
 def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):

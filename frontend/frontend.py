@@ -31,7 +31,7 @@ def update_connection_status():
 
 def update_section_content(book_title, selected_title, sections_state):
     """
-    Display the pre-aggregated content for the book title, specific sections, or subsections.
+    Display the content for the book title, specific sections, or subsections.
     """
     logger.debug(f"Selected title: {selected_title}")
     logger.debug(f"Sections state provided: {sections_state}")
@@ -47,21 +47,63 @@ def update_section_content(book_title, selected_title, sections_state):
         return full_book_content
 
     # Traverse sections and subsections to find the selected title
-    for section in sections_state.get("Sections", []):
+    sections = sections_state.get("Sections", [])
+
+    for section in sections:
+        # Search for the selected section
         if section.get("Heading") == selected_title:
-            content = aggregate_section_content(selected_title, [section], include_subsections=True)
+            content = aggregate_section_with_subsections(section)
             logger.debug(f"Content for section '{selected_title}': {content[:500]}...")
             return content
 
-        # Check for subsections
-        for subsection in section.get("Subsections", []):
-            if subsection.get("Heading") == selected_title:
-                content = aggregate_section_content(selected_title, [subsection], include_subsections=False)
-                logger.debug(f"Content for subsection '{selected_title}': {content[:500]}...")
-                return content
+        # Recursively search subsections
+        result = find_section_content(section, selected_title)
+        if result:
+            logger.debug(f"Content for subsection '{selected_title}': {result[:500]}...")
+            return result
 
     logger.warning(f"No matching section or subsection found for title: {selected_title}")
     return "No matching section or subsection found."
+
+
+
+def find_section_content(section, selected_title):
+    """
+    Recursively finds the content for the selected section or subsection, including all its nested subsections.
+    """
+    if section.get("Heading") == selected_title:
+        return aggregate_section_with_subsections(section)
+
+    for subsection in section.get("Subsections", []):
+        result = find_section_content(subsection, selected_title)
+        if result:
+            return result
+
+    return None
+
+
+def aggregate_section_with_subsections(section, depth=1):
+    """
+    Aggregate content of a section and its subsections recursively.
+    Adds appropriate heading markers (#, ##, ###, etc.) based on depth.
+    """
+    heading_marker = "#" * min(depth, 5)  # Limit heading levels to 5
+    heading = section.get("Heading", "").strip()
+    content = section.get("Content", "")
+
+    if isinstance(content, list):
+        content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
+    elif isinstance(content, str):
+        content = content.strip()
+    else:
+        content = ""
+
+    aggregated_content = f"{heading_marker} {heading}\n\n{content}"
+
+    for subsection in section.get("Subsections", []):
+        aggregated_content += "\n\n" + aggregate_section_with_subsections(subsection, depth + 1)
+
+    return aggregated_content
 
 
 def process_file(file):
@@ -83,13 +125,17 @@ def process_file(file):
         sections = raw_result.get("Sections", [])
         full_book_content = aggregate_section_content(title, sections, include_subsections=True)
 
-        # Add subsection titles to the dropdown
-        for section in sections:
-            if "Subsections" in section:
-                for subsection in section["Subsections"]:
-                    section_titles.append(subsection.get("Heading"))
+        # Add all sections and subsections to the dropdown
+        def add_titles(section, titles):
+            titles.append(section.get("Heading", ""))
+            for subsection in section.get("Subsections", []):
+                add_titles(subsection, titles)
 
-        # Ensure the book title is only included once
+        section_titles = []
+        for section in sections:
+            add_titles(section, section_titles)
+
+        # Ensure the book title is included as a choice
         if title not in section_titles:
             section_titles.insert(0, title)
 
@@ -101,8 +147,7 @@ def process_file(file):
         return (
             title,
             gr.update(choices=section_titles),
-            {"Sections": sections,
-             "FullBookContent": full_book_content},
+            {"Sections": sections, "FullBookContent": full_book_content},
             formatted_content,
             formatted_json_output
         )
@@ -110,7 +155,6 @@ def process_file(file):
     except Exception as e:
         logger.error(f"Error processing file: {e}")
         return "Error processing file.", gr.update(choices=[]), None, "", ""
-
 
 
 def update_speakers(speaker_type, current_selection=None):
