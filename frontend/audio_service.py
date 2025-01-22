@@ -53,11 +53,17 @@ if not os.path.exists(OUTPUT):
     os.mkdir(os.path.join(OUTPUT, "generated_audios"))
 
 
-def aggregate_section_with_subsections(section):
+def aggregate_section_with_subsections(section, depth=1):
     """
-    Aggregate content of a section and its subsections recursively.
+    Aggregate content of a section and its subsections, allowing up to 5 levels.
     """
+    if depth > 5:
+        return ""  # Ignore deeper levels
+
+    heading_marker = "#" * depth  # Use up to 5 # for heading markers
+    heading = section.get("Heading", "").strip()
     content = section.get("Content", "")
+
     if isinstance(content, list):
         content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
     elif isinstance(content, str):
@@ -65,53 +71,44 @@ def aggregate_section_with_subsections(section):
     else:
         content = ""
 
-    subsections = section.get("Subsections", [])
-    for subsection in subsections:
-        sub_heading = subsection.get("Heading", "").strip()
-        sub_content = aggregate_section_with_subsections(subsection)
-        if sub_heading:
-            content += f"\n\n{sub_heading}\n{sub_content}"
+    aggregated_content = f"{heading_marker} {heading}\n\n{content}"
 
-    return content
+    for subsection in section.get("Subsections", []):
+        aggregated_content += "\n\n" + aggregate_section_with_subsections(subsection, depth + 1)
+
+    return aggregated_content
 
 
 def split_text_into_tuples(sections):
     """
-    Splits the book text into tuples of (index, section_name, content).
-    Ensures hierarchical indexes follow a consistent 4-level pattern.
+    Splits the text into tuples of (index, section_name, content),
+    ensuring a maximum depth of 5 levels in the hierarchy.
     """
     tuples = []
-    section_counts = {}  # Track counts for each hierarchical level
+    section_counts = {}
 
-    def process_section(section, level=1, index_prefix="1.0.0.0"):
+    def process_section(section, level=1, index_prefix="1"):
         """
-        Recursively processes sections and generates hierarchical indexes with consistent 4-level depth.
+        Recursively process sections and limit hierarchy to 5 levels.
         """
-        # Increment the count for the current level
+        if level > 5:  # Ignore levels deeper than 5
+            return
+
         if index_prefix not in section_counts:
             section_counts[index_prefix] = 0
         section_counts[index_prefix] += 1
 
-        # Generate the next index
         index_parts = index_prefix.split(".")
-        if level <= len(index_parts):
-            index_parts[level - 1] = str(section_counts[index_prefix])
-        else:
-            index_parts.extend(['0'] * (level - len(index_parts) - 1))
-            index_parts.append(str(section_counts[index_prefix]))
-
-        # Ensure the index has exactly 4 levels
-        while len(index_parts) < 4:
+        if len(index_parts) < level:
+            index_parts.append("0")
+        index_parts[level - 1] = str(section_counts[index_prefix])
+        while len(index_parts) < 5:
             index_parts.append("0")
 
-        # Reconstruct the index as a string
-        current_index = ".".join(index_parts[:4])
-
-        # Extract section details
+        current_index = ".".join(index_parts[:5])
         heading = section.get("Heading", "").strip()
         content = section.get("Content", "")
 
-        # Handle content as a string or list
         if isinstance(content, list):
             content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
         elif isinstance(content, str):
@@ -119,26 +116,16 @@ def split_text_into_tuples(sections):
         else:
             content = ""
 
-        # Combine section name and content
-        if content:
-            combined_content = f"{heading}\n\n{content}"  # Include section name followed by content
-        else:
-            combined_content = heading  # Use section name only if no content exists
-
-        # Add the current section as a tuple
+        combined_content = f"{heading}\n\n{content}"
         tuples.append((current_index, heading, combined_content))
 
-        # Process subsections recursively
-        subsections = section.get("Subsections", [])
-        for subsection in subsections:
+        for subsection in section.get("Subsections", []):
             process_section(subsection, level + 1, current_index)
 
-    # Process each top-level section
     for section in sections:
         process_section(section)
 
     return tuples
-
 
 
 def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav",book_title="no-title"):
