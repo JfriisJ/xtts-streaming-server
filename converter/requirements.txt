@@ -2,3 +2,4 @@ fastapi
 pyspellchecker
 python-multipart
 uvicorn[standard]
+pyspellchecker

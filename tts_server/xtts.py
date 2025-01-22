@@ -36,12 +36,21 @@ if os.path.exists(custom_model_path) and os.path.isfile(custom_model_path + "/co
     model_path = custom_model_path
     print("Loading custom model from", model_path, flush=True)
 else:
-    print("Loading default model", flush=True)
+    print("Checking if the default model is already downloaded...", flush=True)
     model_name = "tts_models/multilingual/multi-dataset/xtts_v2"
-    print("Downloading XTTS Model:", model_name, flush=True)
-    ModelManager().download_model(model_name)
-    model_path = os.path.join(get_user_data_dir("tts"), model_name.replace("/", "--"))
-    print("XTTS Model downloaded", flush=True)
+    model_dir = os.path.join(get_user_data_dir("tts"), model_name.replace("/", "--"))
+    model_files = ["config.json", "model.pth"]  # List essential files for the model
+
+    # Check if all required model files exist
+    if all(os.path.isfile(os.path.join(model_dir, file)) for file in model_files):
+        print("Model already exists. Skipping download.", flush=True)
+        model_path = model_dir
+    else:
+        print("Downloading XTTS Model:", model_name, flush=True)
+        ModelManager().download_model(model_name)
+        model_path = model_dir
+        print("XTTS Model downloaded", flush=True)
+
 
 print("Loading XTTS", flush=True)
 config = XttsConfig()

@@ -3,11 +3,9 @@ import os
 
 import requests
 
-TTS_SERVER_API = os.getenv("XTTS_SERVER_API", "http://localhost:8000")
+TTS_SERVER_API = os.getenv("TTS_SERVER_API", "http://localhost:8000")
 CONVERTER_API = os.getenv("CONVERTER_API", "http://localhost:5000")
 
-if not TTS_SERVER_API:
-    XTTS_SERVER_API = "http://localhost:8000"
 
 # Setup logging
 logging.basicConfig(
@@ -18,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def check_service_health():
-    services = {"Converter Service": CONVERTER_API, "Xtts Service": XTTS_SERVER_API}
+    services = {"Converter Service": CONVERTER_API, "Xtts Service": TTS_SERVER_API}
     status = {}
 
     for service_name, url in services.items():
