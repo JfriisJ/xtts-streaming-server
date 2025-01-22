@@ -10,7 +10,7 @@ import re
 import requests
 from pydub import AudioSegment
 
-from health_service import XTTS_SERVER_API
+from health_service import TTS_SERVER_API
 
 # Initialize the tokenizer
 tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
@@ -33,8 +33,8 @@ LANGUAGES, STUDIO_SPEAKERS, CLONED_SPEAKERS = {}, {}, {}
 retries = 5
 for attempt in range(retries):
     try:
-        LANGUAGES = requests.get(f"{XTTS_SERVER_API}/languages", timeout=10).json()
-        STUDIO_SPEAKERS = requests.get(f"{XTTS_SERVER_API}/studio_speakers", timeout=10).json()
+        LANGUAGES = requests.get(f"{TTS_SERVER_API}/languages", timeout=10).json()
+        STUDIO_SPEAKERS = requests.get(f"{TTS_SERVER_API}/studio_speakers", timeout=10).json()
         CLONED_SPEAKERS = {}
         print("Audio service connected.")
         break
@@ -214,7 +214,7 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
 
 def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
     files = {"wav_file": ("reference.wav", open(upload_file, "rb"))}
-    embeddings = requests.post(XTTS_SERVER_API + "/clone_speaker", files=files).json()
+    embeddings = requests.post(TTS_SERVER_API + "/clone_speaker", files=files).json()
     with open(os.path.join(OUTPUT, "cloned_speakers", clone_speaker_name + ".json"), "w") as fp:
         json.dump(embeddings, fp)
     CLONED_SPEAKERS[clone_speaker_name] = embeddings
@@ -316,7 +316,7 @@ def text_to_audio(
     cached_audio_paths = []
     for idx, chunk in enumerate(chunks):
         response = requests.post(
-            XTTS_SERVER_API + "/tts",
+            TTS_SERVER_API + "/tts",
             json={
                 "text": chunk,
                 "language": lang,

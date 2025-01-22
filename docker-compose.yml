@@ -9,7 +9,7 @@ services:
       - "3009:3009"
     environment:
       - CONVERTER_API=http://converter:5000
-      - XTTS_SERVER_API=http://tts_server:80
+      - TTS_SERVER_API=http://tts_server:80
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     networks:
