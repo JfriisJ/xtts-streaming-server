@@ -151,7 +151,7 @@ def update_speakers(speaker_type, current_selection=None):
 
 def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
     """
-    Generate audio for the selected title or entire book and return the paths for playback and download.
+    Generate audio for the selected title or entire book and return the paths for playback and selection.
     """
     logger.info(f"Generating audio for: {selected_title or book_title}")
     logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}, Format: {output_format}")
@@ -169,12 +169,10 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
     )
 
     if not audio_files:
-        return "No audio files generated. Check the section(s) for content.", None
+        return None, [], "No audio files generated. Check the section(s) for content."
 
-    # Return the first audio file for playback and all files for download
-    return audio_files[0], audio_files
-
-
+    # Return the first audio file for initial playback and all files for selection
+    return audio_files[0], gr.update(choices=audio_files, value=audio_files[0]), audio_files
 
 
 def get_selected_content(selected_title, sections):
@@ -214,11 +212,14 @@ with gr.Blocks() as Book2Audio:
                 process_btn = gr.Button("Process File")
                 book_title = gr.Textbox(label="Book Title", value="Unknown Book", interactive=False)
                 section_titles = gr.Dropdown(label="Select Section", choices=[], value=None, interactive=True)
-            section_preview = gr.Textbox(label="Section Content", lines=20, interactive=False)
+            section_preview = gr.Textbox(label="Section Content", lines=20, interactive=True)
 
         with gr.Row():
             tts_button = gr.Button("Generate Audio")
             generated_audio = gr.Audio(label="Generated Audio", interactive=False)  # For playback
+            file_selector = gr.Dropdown(label="Select Audio File", choices=[],
+                                        interactive=True)  # Dropdown for file selection
+
             download_links = gr.Files(label="Download Generated Audio")  # For downloads
 
         json_display = gr.Textbox(label="Full JSON Output", lines=20, interactive=False)
@@ -235,6 +236,12 @@ with gr.Blocks() as Book2Audio:
         inputs=[file_input],
         outputs=[book_title, section_titles, sections_state, section_preview, json_display]
     )
+    # Update audio player when a new file is selected
+    file_selector.change(
+        lambda selected_file: selected_file,  # Update the audio player with the selected file
+        inputs=[file_selector],
+        outputs=[generated_audio]
+    )
     speaker_type.change(
         update_speakers,
         inputs=[speaker_type],
@@ -245,13 +252,14 @@ with gr.Blocks() as Book2Audio:
         inputs=[book_title, section_titles, sections_state],
         outputs=[section_preview]
     )
+    # Event binding
     tts_button.click(
         text_to_speech,
         inputs=[
             book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type,
             output_format_dropdown
         ],
-        outputs=[generated_audio, download_links]  # Separate outputs for playback and download
+        outputs=[generated_audio, file_selector, download_links]
     )
     process_btn.click(
         process_file,
