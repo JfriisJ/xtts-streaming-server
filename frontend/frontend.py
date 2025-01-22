@@ -1,10 +1,13 @@
+import base64
 import json
 import os
 import logging
 import gradio as gr
-from audio_service import generate_audio, clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
+from audio_service import generate_audio, clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS, redis_client
 from health_service import check_service_health
 from text_service import extract_text_from_file, present_text_to_ui, aggregate_section_content
+
+
 
 # Logging configuration
 os.makedirs('/app/logs', exist_ok=True)
@@ -195,13 +198,41 @@ def update_speakers(speaker_type, current_selection=None):
 
 def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
     """
-    Generate audio for the selected title or entire book and return the paths for playback and selection.
+    Generate audio for the selected title or entire book, fetch segments and combined audio from Redis if available,
+    and return paths for playback and selection.
     """
-    logger.info(f"Generating audio for: {selected_title or book_title}")
+    logger.info(f"Generating or fetching audio for: {selected_title or book_title}")
     logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}, Format: {output_format}")
     logger.debug(f"Sections state: {json.dumps(sections_state, indent=2)}")
 
     sections = sections_state.get("Sections", [])
+    redis_key = f"{book_title}:{selected_title}".replace(" ", "_")
+    segment_keys = []  # List to track Redis keys for segments
+    segment_files = []  # Local file paths for segments
+
+    # Check for existing segments in Redis
+    tuples = generate_audio.split_text_into_tuples(sections)
+    for index, (section_index, section_name, _) in enumerate(tuples):
+        segment_key = f"segment_audio:{redis_key}:{section_index}"
+        redis_audio = redis_client.get(segment_key)
+
+        if redis_audio:
+            logger.info(f"Segment '{section_name}' found in Redis with key: {segment_key}")
+            # Save segment locally for playback
+            segment_path = f"./outputs/{redis_key}_{section_index}.{output_format}"
+            with open(segment_path, "wb") as f:
+                f.write(base64.b64decode(redis_audio))
+            segment_files.append(segment_path)
+        else:
+            segment_keys.append(segment_key)  # Track keys for generation
+
+    # If all segments are already in Redis, return them
+    if len(segment_files) == len(tuples):
+        logger.info(f"All segments for '{selected_title}' fetched from Redis.")
+        return segment_files[0], gr.update(choices=segment_files, value=segment_files[0]), segment_files
+
+    # Generate missing segments
+    logger.info(f"Generating missing segments for '{selected_title}'...")
     audio_files = generate_audio(
         book_title,
         selected_title,
@@ -215,22 +246,14 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
     if not audio_files:
         return None, [], "No audio files generated. Check the section(s) for content."
 
-    # Return the first audio file for initial playback and all files for selection
+    # Save newly generated segments to Redis
+    for i, file_path in enumerate(audio_files):
+        with open(file_path, "rb") as f:
+            redis_client.set(segment_keys[i], base64.b64encode(f.read()).decode("utf-8"))
+
     return audio_files[0], gr.update(choices=audio_files, value=audio_files[0]), audio_files
 
 
-def get_selected_content(selected_title, sections):
-    """
-    Retrieve the content of the selected section or the entire book if the title is selected.
-    """
-    if selected_title == sections[0].get("Title", "Unknown Book"):
-        return "\n".join([aggregate_section_content(selected_title, section, include_subsections=True) for section in sections])
-
-    for section in sections:
-        if section.get("Heading") == selected_title:
-            return aggregate_section_content(selected_title, section, include_subsections=True)
-
-    return ""
 
 # Gradio UI
 with gr.Blocks() as Book2Audio:
