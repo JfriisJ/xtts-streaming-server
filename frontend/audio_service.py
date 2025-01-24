@@ -1,16 +1,25 @@
 import base64
+import io
 import json
 import logging
 import os
-import shutil
-import time
 from transformers import GPT2TokenizerFast
 import re
 
 import requests
 from pydub import AudioSegment
 
-from health_service import TTS_SERVER_API
+import redis
+
+
+# Initialize Redis client
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+redis_status_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=0)
+redis_task_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=1)
+redis_audio_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=2)
+
+TTS_SERVER_API = os.getenv("TTS_SERVER_API", "http://localhost:4001")
 
 # Initialize the tokenizer
 tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
@@ -25,32 +34,135 @@ logger = logging.getLogger(__name__)
 
 # Initialize cached speakers and languages
 OUTPUT = "./outputs"
-os.makedirs(os.path.join(OUTPUT, "cloned_speakers"), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT, "generated_audios"), exist_ok=True)
-
-
-LANGUAGES, STUDIO_SPEAKERS, CLONED_SPEAKERS = {}, {}, {}
-retries = 5
-for attempt in range(retries):
-    try:
-        LANGUAGES = requests.get(f"{TTS_SERVER_API}/languages", timeout=10).json()
-        STUDIO_SPEAKERS = requests.get(f"{TTS_SERVER_API}/studio_speakers", timeout=10).json()
-        CLONED_SPEAKERS = {}
-        print("Audio service connected.")
-        break
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"Audio service connection attempt {attempt + 1} failed: {e}")
-        if attempt < retries - 1:
-            time.sleep(10)
-        else:
-            logger.error("Failed to connect to the audio service after multiple attempts.")
 
 
 print("Preparing file structure...")
 if not os.path.exists(OUTPUT):
     os.mkdir(OUTPUT)
-    os.mkdir(os.path.join(OUTPUT, "cloned_speakers"))
     os.mkdir(os.path.join(OUTPUT, "generated_audios"))
+
+#------------------------------------------------------------
+#redis section
+def monitor_redis_for_tasks():
+    """
+    Listen to Redis Pub/Sub for new tasks and trigger audio generation.
+    """
+    # Subscribe to the Redis Pub/Sub channel
+    pubsub = redis_task_client.pubsub()
+    pubsub.subscribe("audio_generation_channel")
+    logger.info("Subscribed to 'audio_generation_channel'")
+
+    # Listen for messages on the channel
+    for message in pubsub.listen():
+        try:
+            if message["type"] == "message":
+                # Parse the incoming task data
+                task_data = json.loads(message["data"])  # Ensure task_data is parsed as a dictionary
+                task_id = task_data.get("task_id")
+
+                if not task_id:
+                    logger.error(f"Task data missing 'task_id': {task_data}")
+                    continue
+
+                # Extract and validate required fields
+                book_title = task_data.get("book_title")
+                section_heading = task_data.get("section_heading")
+                language = task_data.get("language", "en")
+                speaker_name = task_data.get("speaker_name", "Default Speaker")
+                speaker_type = task_data.get("speaker_type", "Studio")
+                output_format = task_data.get("output_format", "wav")
+
+                # Parse 'sections' if it is a string
+                sections_raw = task_data.get("sections")
+                if isinstance(sections_raw, str):
+                    try:
+                        sections_raw = json.loads(sections_raw)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse 'sections' as JSON for task {task_id}: {e}")
+                        redis_task_client.set(f"status:{task_id}", f"error: invalid 'sections' format")
+                        continue
+
+                # Validate the structure of 'sections'
+                if not isinstance(sections_raw, dict) or "Content" not in sections_raw:
+                    logger.error(f"'Sections' structure is invalid or missing for task {task_id}: {task_data}")
+                    redis_task_client.set(f"status:{task_id}", "error: invalid 'sections' structure")
+                    continue
+
+                # Parse the sections
+                sections = parse_sections(sections_raw)
+
+                if not sections:
+                    logger.error(f"No valid sections extracted for task {task_id}: {task_data}")
+                    redis_task_client.set(f"status:{task_id}", "error: no valid sections extracted")
+                    continue
+
+                # Check the current task status
+                status = redis_task_client.get(f"status:{task_id}")
+                if status != "queued":
+                    logger.info(f"Ignoring task {task_id} with status: {status}")
+                    continue
+
+                # Update the task status to 'processing'
+                redis_task_client.set(f"status:{task_id}", "processing")
+                logger.info(f"Processing task {task_id}: {task_data}")
+
+                try:
+                    # Generate audio for the task
+                    generate_audio(
+                        book_title=book_title,
+                        selected_title=section_heading,
+                        sections=sections,
+                        language=language,
+                        studio_speaker=speaker_name,
+                        speaker_type=speaker_type,
+                        output_format=output_format,
+                    )
+                    redis_task_client.set(f"status:{task_id}", "completed")
+                    logger.info(f"Task {task_id} completed successfully")
+                except Exception as e:
+                    logger.error(f"Error processing task {task_id}: {e}")
+                    redis_task_client.set(f"status:{task_id}", f"error: {str(e)}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON from message: {e}")
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+
+
+def parse_sections(sections_data):
+    """
+    Parse sections from the task data and extract valid content.
+    """
+
+    def extract_section(section):
+        # Extract content from the section
+        content = section.get("Content", "").strip()
+        if isinstance(content, str) and content:
+            # If content is a non-empty string, return it with the heading
+            return {"Heading": section.get("Heading", "").strip(), "Content": content}
+        elif isinstance(content, list):
+            # If content is a list, join the items into a single string
+            return {"Heading": section.get("Heading", "").strip(), "Content": "\n".join(map(str, content))}
+        return None  # Skip sections without valid content
+
+    parsed_sections = []
+
+    # Check if sections_data is a dictionary
+    if isinstance(sections_data, dict):
+        top_section = extract_section(sections_data)
+        if top_section:
+            parsed_sections.append(top_section)  # Add top-level section
+        # Recursively parse all subsections
+        for subsection in sections_data.get("Subsections", []):
+            parsed_sections.extend(parse_sections(subsection))
+
+    # Check if sections_data is a list
+    elif isinstance(sections_data, list):
+        for section in sections_data:
+            # Recursively parse each section in the list
+            parsed_sections.extend(parse_sections(section))
+
+    return parsed_sections
 
 
 def aggregate_section_with_subsections(section, depth=1):
@@ -116,16 +228,19 @@ def split_text_into_tuples(sections):
         else:
             content = ""
 
-        combined_content = f"{heading}\n\n{content}"
-        tuples.append((current_index, heading, combined_content))
+        if heading and content:  # Only add sections with valid heading and content
+            combined_content = f"{heading}\n\n{content}"
+            tuples.append((current_index, heading, combined_content))
 
-        for subsection in section.get("Subsections", []):
+        # Process subsections recursively
+        for idx, subsection in enumerate(section.get("Subsections", []), start=1):
             process_section(subsection, level + 1, current_index)
 
-    for section in sections:
-        process_section(section)
+    for idx, section in enumerate(sections, start=1):
+        process_section(section, level=1, index_prefix=str(idx))
 
     return tuples
+
 
 
 def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav",book_title="no-title"):
@@ -138,6 +253,9 @@ def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara
     audio_files = []
 
     for section_index, section_name, content in tuples:
+
+        # log the current tuple being processed
+        logger.info(f"Processing tuple: {section_index} - {section_name}out of {len(tuples)}")
         # Ensure no content is skipped
         if not content.strip():
             logger.warning(f"Section '{section_name}' (Index: {section_index}) has no content.")
@@ -145,8 +263,7 @@ def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara
 
         try:
             logger.info(f"Generating audio for section '{section_name}' (Index: {section_index})")
-            logger.debug(f"Section content: {content[:500]}...")  # Log first 500 characters
-            file_path = text_to_audio(
+            cached_audio_file = text_to_audio(
                 text=content,
                 heading=section_name,
                 section_index=section_index,  # Pass the hierarchical index
@@ -156,12 +273,13 @@ def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara
                 output_format=output_format,
                 book_title=book_title
             )
-            if file_path:
-                audio_files.append(file_path)
+            if cached_audio_file:
+                audio_files.append(cached_audio_file)
+            logger.info(f"Completed audio generation for section '{cached_audio_file}' (Index: {section_index})")
         except Exception as e:
             logger.error(f"Error generating audio for section '{section_name}' (Index: {section_index}): {e}")
 
-    logger.info(f"Completed audio generation. Generated files: {audio_files}")
+    logger.info(f"Completed audio generation. Total cached audio files: {len(audio_files)}")
     return audio_files
 
 
@@ -223,7 +341,7 @@ def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
     embeddings = requests.post(TTS_SERVER_API + "/clone_speaker", files=files).json()
     with open(os.path.join(OUTPUT, "cloned_speakers", clone_speaker_name + ".json"), "w") as fp:
         json.dump(embeddings, fp)
-    CLONED_SPEAKERS[clone_speaker_name] = embeddings
+    [clone_speaker_name] = embeddings
     cloned_speaker_names.append(clone_speaker_name)
 
 
@@ -276,7 +394,25 @@ def get_aggregated_content(selected_title, sections, include_subsections=True):
     logger.info(f"Aggregated content: {result[:500]}...")  # Log the first 500 characters
     return result
 
+def fetch_service_data():
+    """
+    Fetch languages and speakers data from Redis.
+    """
+    try:
+        # Fetch languages and speakers from Redis
+        languages = redis_status_client.get("data:tts:languages")
+        studio_speakers = redis_status_client.get("data:tts:studio_speakers")
+        cloned_speakers = redis_status_client.get("data:tts:cloned_speakers")
 
+        # Parse the JSON data if present
+        languages = json.loads(languages) if languages else []  # Expecting a list
+        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}  # Expecting a dictionary
+        cloned_speakers = json.loads(cloned_speakers) if cloned_speakers else {}  # Expecting a dictionary
+
+        return languages, studio_speakers, cloned_speakers
+    except Exception as e:
+        logger.error(f"Error fetching languages and speakers from Redis: {e}")
+        return [], {}  # Return empty list and dictionary as fallback
 
 def text_to_audio(
     text,
@@ -288,38 +424,28 @@ def text_to_audio(
     speaker_name_custom=None,
     output_format="wav",
     book_title="no-title",
+    task_id=None,  # Task ID for Redis key structuring
 ):
     logger.info(f"Converting text to audio for heading: '{heading}' (Index: {section_index})")
     logger.debug(f"Text to convert: {text[:100]}...")
 
-    # Clean the book title and ensure the directory exists
-    clean_book_title = clean_filename(book_title)
-    book_output_dir = os.path.join(OUTPUT, "generated_audios", clean_book_title)
-    os.makedirs(book_output_dir, exist_ok=True)
-
-    # Combine index and heading for the file name
-    file_name = clean_filename(f"{section_index}_{heading}")
-    file_path = os.path.join(book_output_dir, f"{file_name}.{output_format}")
-    logger.debug(f"Generated file path: {file_path}")
-
+    # Fetch speaker embeddings from Redis
+    languages, studio_speakers, cloned_speakers = fetch_service_data()
     embeddings = (
-        STUDIO_SPEAKERS.get(speaker_name_studio)
+        studio_speakers.get(speaker_name_studio)
         if speaker_type == "Studio"
-        else CLONED_SPEAKERS.get(speaker_name_custom)
+        else cloned_speakers.get(speaker_name_custom)
     )
     if not embeddings:
         logger.error(f"No embeddings found for speaker type '{speaker_type}' and speaker name.")
         return None
 
-    logger.debug(f"Using embeddings: {embeddings}")
-
     # Process the text into smaller chunks
     chunks = split_text_into_chunks(text)
 
-    cache_dir = os.path.join(OUTPUT, "cache")
-    os.makedirs(cache_dir, exist_ok=True)
+    logger.info(f"Generating audio chunks for heading: '{heading}' '{chunks}'")
 
-    cached_audio_paths = []
+    cached_chunk_keys = []
     for idx, chunk in enumerate(chunks):
         response = requests.post(
             TTS_SERVER_API + "/tts",
@@ -335,25 +461,25 @@ def text_to_audio(
             continue
 
         decoded_audio = base64.b64decode(response.content)
-        chunk_path = os.path.join(cache_dir, f"{file_name}_{idx + 1}.wav")
-        with open(chunk_path, "wb") as fp:
-            fp.write(decoded_audio)
-            cached_audio_paths.append(chunk_path)
+        redis_safe_title = clean_filename(book_title)
+        redis_safe_heading = clean_filename(heading)
+        chunk_key = f"{redis_safe_title}:{redis_safe_heading}:{section_index}:{idx + 1}"
 
-    if len(cached_audio_paths) > 0:
-        combined_audio_path = concatenate_audios(cached_audio_paths, output_format, clean_book_title)
-        shutil.move(combined_audio_path, file_path)
-        shutil.rmtree(cache_dir)
-        logger.info(f"Saved audio file: {file_path}")
-        return file_path
-    else:
-        logger.warning(f"No audio files generated for heading: '{heading}'")
+        redis_audio_client.set(chunk_key, base64.b64encode(decoded_audio).decode("utf-8"))
+        cached_chunk_keys.append(chunk_key)
+        logger.info(f"Audio chunk {idx + 1} cached in Redis under key: {chunk_key}")
+
+    if not cached_chunk_keys:
+        logger.warning(f"No audio chunks generated for heading: '{heading}'")
         return None
 
+    # Concatenate audio chunks and save the final file in Redis
+    audio_file = concatenate_audios(cached_chunk_keys, book_title, section_index, heading, output_format)
+    return audio_file
 
 
 
-def concatenate_audios(audio_paths, output_format="mp3", book_title="no-title", pauses=None):
+def concatenate_audios(cached_chunk_keys, book_title, section_index, heading="no-heading", output_format="mp3",pauses=None):
     """
     Combines multiple audio files into one with configurable pauses and allows saving in different formats.
     """
@@ -364,7 +490,7 @@ def concatenate_audios(audio_paths, output_format="mp3", book_title="no-title", 
     pause_between_sentences = AudioSegment.silent(duration=pauses["sentence"])
     pause_between_heading_and_text = AudioSegment.silent(duration=pauses["heading"])
 
-    for idx, path in enumerate(audio_paths):
+    for idx, path in enumerate(cached_chunk_keys):
         audio = AudioSegment.from_file(path)
         if idx == 0:
             combined += audio + pause_between_heading_and_text
@@ -374,17 +500,21 @@ def concatenate_audios(audio_paths, output_format="mp3", book_title="no-title", 
     combined = combined[:-len(pause_between_sentences)]  # Remove the final pause
 
     # Ensure the output folder exists
-    clean_book_title = clean_filename(book_title)
-    book_output_dir = os.path.join(OUTPUT, "generated_audios", clean_book_title)
-    os.makedirs(book_output_dir, exist_ok=True)
+    clean_title = clean_filename(heading)
+    clean_book_title = book_title(book_title)
 
-    # Save the combined audio in the specified format
-    output_file_path = os.path.join(book_output_dir, f"combined_audio.{output_format}")
-    combined.export(output_file_path, format=output_format)
-    logger.info(f"Saved combined audio file: {output_file_path}")
-    return output_file_path
+    # Save combined audio to Redis
+    final_key = f"{clean_book_title}:{clean_title}:{section_index}"
+    try:
+        with io.BytesIO() as output_buffer:
+            combined.export(output_buffer, format=output_format)
+            redis_audio_client.set(final_key, base64.b64encode(output_buffer.getvalue()).decode("utf-8"))
+            logger.info(f"Combined audio saved in Redis under key: {final_key}")
+    except Exception as e:
+        logger.error(f"Error saving combined audio for section '{heading}' to Redis: {e}")
+        return None
 
-
+    return final_key
 
 
 def split_text_into_chunks(text, max_chars=250, max_tokens=350):
@@ -442,3 +572,6 @@ def clean_filename(filename):
 
 
 
+if __name__ == "__main__":
+    logger.info("Starting audio service...")
+    monitor_redis_for_tasks()

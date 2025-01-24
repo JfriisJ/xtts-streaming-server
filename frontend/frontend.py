@@ -269,7 +269,7 @@ def publish_audio_request_to_redis(
 def update_section_dropdown_and_audio(book_title, audio_files_by_book):
     """
     Updates the section dropdown based on the selected book title and
-    dynamically retrieves the first section's audio to update the generated_audio component.
+    retrieves the first section's audio to update the generated_audio component.
     """
     if not book_title or book_title not in audio_files_by_book:
         return gr.update(choices=[], value=None), None
@@ -278,14 +278,13 @@ def update_section_dropdown_and_audio(book_title, audio_files_by_book):
     section_titles = [f"{index} - {section}" for index, section in sections]
 
     # Retrieve the first section's audio
-    first_section_key = f"{book_title}:{sections[0][0]}:{sections[0][1]}" if sections else None
+    first_section_key = f"audio:{book_title}:{sections[0][0]}:{sections[0][1]}" if sections else None
     audio_file_path = retrieve_audio_from_redis_to_file(first_section_key) if first_section_key else None
 
     return (
         gr.update(choices=section_titles, value=section_titles[0] if section_titles else None),
         audio_file_path
     )
-
 
 
 # Helper functions-------------------------------------------------------------
@@ -353,20 +352,23 @@ def get_audio_files_grouped_by_book():
     """Retrieve and organize audio files in Redis grouped by book title."""
     grouped_files = {}
     try:
-        for key in redis_audio_client.scan_iter("*"):
-            match = re.match(r"(?P<book>.*):(?P<index>[0-9.]+):(?P<section>.*)", key)
+        for key in redis_audio_client.scan_iter("audio:*"):
+            # Parse the Redis key format
+            match = re.match(r"audio:(?P<book>.*?):(?P<index>[0-9.]+):(?P<section>.*)", key)
             if match:
                 book_title = match.group("book")
                 index = match.group("index")
                 section_title = match.group("section")
                 grouped_files.setdefault(book_title, []).append((index, section_title))
 
+        # Sort sections by index for each book
         for book_title in grouped_files:
             grouped_files[book_title].sort(key=lambda x: tuple(map(int, x[0].split("."))))
     except Exception as e:
         logger.error(f"Error fetching grouped audio files: {e}")
 
     return grouped_files
+
 
 
 def update_status(task_id):
@@ -440,7 +442,7 @@ with gr.Blocks() as Book2Audio:
 
         with gr.Row():
             with gr.Row():
-                book_dropdown = gr.Dropdown(label="Select Book", choices=[], value=None, interactive=True)
+                book_dropdown = gr.Dropdown(label="Select Book", choices=list(audio_files_by_book.keys()), value=None, interactive=True)
                 section_dropdown = gr.Dropdown(label="Select Section", choices=[], value=None)
 
             with gr.Column():
@@ -460,7 +462,7 @@ with gr.Blocks() as Book2Audio:
     book_dropdown.change(
         update_section_dropdown_and_audio,
         inputs=[book_dropdown, gr.State(audio_files_by_book)],
-        outputs=[section_dropdown, generated_audio],
+        outputs=[section_dropdown, generated_audio]
     )
     tts_button.click(
         publish_audio_request_to_redis,
@@ -488,9 +490,11 @@ with gr.Blocks() as Book2Audio:
 
     # Fetch audio dynamically when a section is selected
     section_dropdown.change(
-        lambda book, section: fetch_audio_from_redis(f"{book}:{section.split(' - ')[0]}:{section.split(' - ')[1]}"),
+        lambda book, section: fetch_audio_from_redis(
+            f"audio:{sanitize_filename(book)}:{section.split(' - ')[0]}:{sanitize_filename(section.split(' - ')[1])}"
+        ),
         inputs=[book_dropdown, section_dropdown],
-        outputs=[generated_audio],
+        outputs=[generated_audio]
     )
 
     section_titles.change(
