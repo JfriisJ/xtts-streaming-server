@@ -12,3 +12,4 @@ tensorflow
 flax
 matplotlib
 pydub
+redis

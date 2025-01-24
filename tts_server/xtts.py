@@ -214,8 +214,12 @@ def get_languages():
 
 @app.get("/health")
 def health():
+    """
+    Health check endpoint for the API.
+    """
     try:
-        # Add any specific service checks here
+        logger.info("Health check requested.")
         return {"status": "healthy"}
     except Exception as e:
+        logger.error(f"Health check failed: {e}")
         return {"status": "unhealthy", "error": str(e)}

@@ -9,7 +9,7 @@ services:
       - "3009:3009"
     environment:
       - CONVERTER_API=http://converter:5000
-      - TTS_SERVER_API=http://tts_server:80
+      - TTS_SERVER_API=http://tts_server:4001
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     networks:
@@ -17,13 +17,14 @@ services:
     depends_on:
       tts_server:
         condition: service_healthy
-#      redis:
-#        condition: service_started
+      redis:
+        condition: service_healthy
     healthcheck:
       test: curl --fail http://localhost:3009 || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
+    restart: always
 
   converter:
     container_name: converter
@@ -39,10 +40,11 @@ services:
     networks:
       - app_network
     healthcheck:
-      test: curl --fail http://converter:5000/health || exit 1
+      test: curl --fail http://localhost:5000/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
+    restart: always
 
   tts_server:
     container_name: tts_server
@@ -51,31 +53,44 @@ services:
       context: ./tts_server/TTS
       dockerfile: Dockerfile
     environment:
-      COQUI_TOS_AGREED: "1"  # Required by Coqui TTS
+      - COQUI_TOS_AGREED=1
+      - USE_CPU=0  # Set to 1 if no GPU is available
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     ports:
-      - "8000:80"
+      - "4001:4001"
     runtime: nvidia  # Enables GPU support with NVIDIA runtime
-    restart: unless-stopped
+    restart: always
     volumes:
       - tts_server_models:/app/tts_models
-      - tts_logs:/app/logs
-      - tts_outputs:/app/outputs
+      - /root/.local/share/tts:/root/.local/share/tts  # Persist downloaded models
     networks:
       - app_network
     healthcheck:
-      test: curl --fail http://tts_server:80/health || exit 1
+      test: curl --fail http://localhost:4001/health || exit 1
       interval: 30s
       timeout: 10s
       retries: 5
+#      start_period: 60s  # Allow time for model loading
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: "2.0"
 
-#  redis:
-#    container_name: redis
-#    image: redis:latest
-#    restart: unless-stopped
-#    ports:
-#      - "6379:6379"
-#    networks:
-#      - app_network
+  redis:
+    container_name: redis
+    image: redis:latest
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
 volumes:
   tts_server_models:

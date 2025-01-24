@@ -1,12 +1,19 @@
 import json
 import os
 import logging
+import time
+
 import gradio as gr
-from audio_service import generate_audio, clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
-from health_service import check_service_health
+import base64
+import redis
+import tempfile
+import re
+
+
 from text_service import extract_text_from_file, present_text_to_ui, aggregate_section_content
 
-# Logging configuration
+
+# Logging configuration---------------------------------------------------------
 os.makedirs('/app/logs', exist_ok=True)
 logging.basicConfig(
     level=logging.DEBUG,
@@ -15,18 +22,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def update_connection_status():
+
+# Initialize Redis client (Ensure it matches your Redis configuration)-----------
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+redis_status_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=0)
+redis_task_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=1)
+redis_audio_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=2)
+
+def fetch_audio_from_redis(redis_key):
     """
-    Check the status of connected services and update the connection status in the UI.
+    Fetch audio data from Redis and save it as a temporary file.
     """
-    try:
-        # Call the health service to check the status of all services
-        status = check_service_health()
-        # Format the status for display
-        return "\n".join([f"{name}: {info['status']}" for name, info in status.items()])
-    except Exception as e:
-        logger.error(f"Error updating connection status: {e}")
-        return "Error checking service status."
+    audio_data = redis_task_client.get(redis_key)
+    if not audio_data:
+        raise ValueError(f"No audio found in Redis for key: {redis_key}")
+
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    temp_file.write(base64.b64decode(audio_data))
+    temp_file.close()
+    return temp_file.name
 
 
 def update_section_content(book_title, selected_title, sections_state):
@@ -156,100 +171,242 @@ def process_file(file):
         logger.error(f"Error processing file: {e}")
         return "Error processing file.", gr.update(choices=[]), None, "", ""
 
-
-def update_speakers(speaker_type, current_selection=None):
+def fetch_audio_result_from_redis(task_id):
     """
-    Dynamically update the speaker dropdown based on the speaker type.
-    Automatically select a default speaker if none is currently selected or if the current selection is invalid.
+    Fetch the generated audio file from Redis.
     """
     try:
-        # Determine the list of speakers based on the selected type
-        if speaker_type == "Studio":
-            speakers = list(STUDIO_SPEAKERS.keys())
-        elif speaker_type == "Cloned":
-            speakers = list(CLONED_SPEAKERS.keys())
-        else:
-            speakers = []
-
-        if not speakers:
-            logger.warning(f"No speakers found for type: {speaker_type}")
-            return gr.update(choices=[], value=None)
-
-        # Choose a default speaker
-        if current_selection not in speakers:
-            default_speaker = "Asya Anara" if "Asya Anara" in speakers else speakers[0]
-        else:
-            default_speaker = current_selection
-
-        logger.info(f"Speaker dropdown updated for type: {speaker_type} with speakers: {speakers}. Default: {default_speaker}")
-
-        # Update the dropdown with the speaker list and set the default
-        return gr.update(choices=speakers, value=default_speaker)
-
+        audio_data = redis_audio_client.get(f"audio:{task_id}")
+        if not audio_data:
+            raise ValueError(f"No audio found for task {task_id}")
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_file.write(base64.b64decode(audio_data))
+        temp_file.close()
+        return temp_file.name
     except Exception as e:
-        logger.error(f"Error updating speakers: {e}")
-        return gr.update(choices=[], value=None)
+        logger.error(f"Error fetching audio for task {task_id}: {e}")
+        return None
 
-
-
-
-def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
+def fetch_languages_and_speakers():
     """
-    Generate audio for the selected title or entire book and return the paths for playback and selection.
+    Fetch languages and speakers data from Redis.
     """
-    logger.info(f"Generating audio for: {selected_title or book_title}")
-    logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}, Format: {output_format}")
-    logger.debug(f"Sections state: {json.dumps(sections_state, indent=2)}")
+    try:
+        # Fetch languages and speakers from Redis
+        languages = redis_status_client.get("data:tts:languages")
+        studio_speakers = redis_status_client.get("data:tts:studio_speakers")
 
-    sections = sections_state.get("Sections", [])
-    audio_files = generate_audio(
-        book_title,
-        selected_title,
-        sections,
-        language=language,
-        studio_speaker=speaker_name,
-        speaker_type=speaker_type,
-        output_format=output_format
+        # Parse the JSON data if present
+        languages = json.loads(languages) if languages else []  # Expecting a list
+        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}  # Expecting a dictionary
+        return languages, studio_speakers
+    except Exception as e:
+        logger.error(f"Error fetching languages and speakers from Redis: {e}")
+        return [], {}  # Return empty list and dictionary as fallback
+
+
+def fetch_status_from_redis(task_id):
+    """
+    Fetch the status of a task from Redis.
+    """
+    try:
+        status = redis_task_client.get(f"status:{task_id}")
+        logger.info(f"Task {task_id} status: {status}")
+        return status
+    except Exception as e:
+        logger.error(f"Error fetching status for task {task_id}: {e}")
+        return "unknown"
+
+
+def publish_audio_request_to_redis(
+        book_title, section_heading, sections, language, speaker_name, speaker_type, output_format
+):
+    """
+    Publish an audio generation request to Redis and save it for persistence.
+    """
+    try:
+        task_id = f"task_{int(time.time())}"
+        request_data = {
+            "task_id": task_id,
+            "book_title": book_title,
+            "section_heading": section_heading or "Main Title",
+            "sections": sections,
+            "language": language,
+            "speaker_name": speaker_name,
+            "speaker_type": speaker_type,
+            "output_format": output_format,
+        }
+
+        # Save the task data persistently
+        redis_task_client.set(f"task:{task_id}", json.dumps(request_data))
+        redis_task_client.set(f"status:{task_id}", "queued")
+
+        # Publish the task to the channel
+        redis_task_client.publish("audio_generation_channel", json.dumps(request_data))
+
+        logger.info(f"Published task to Redis: {task_id}")
+        return task_id
+    except Exception as e:
+        logger.error(f"Failed to publish audio request: {e}")
+
+
+def update_section_dropdown_and_audio(book_title, audio_files_by_book):
+    """
+    Updates the section dropdown based on the selected book title and
+    dynamically retrieves the first section's audio to update the generated_audio component.
+    """
+    if not book_title or book_title not in audio_files_by_book:
+        return gr.update(choices=[], value=None), None
+
+    sections = audio_files_by_book[book_title]
+    section_titles = [f"{index} - {section}" for index, section in sections]
+
+    # Retrieve the first section's audio
+    first_section_key = f"{book_title}:{sections[0][0]}:{sections[0][1]}" if sections else None
+    audio_file_path = retrieve_audio_from_redis_to_file(first_section_key) if first_section_key else None
+
+    return (
+        gr.update(choices=section_titles, value=section_titles[0] if section_titles else None),
+        audio_file_path
     )
 
-    if not audio_files:
-        return None, [], "No audio files generated. Check the section(s) for content."
-
-    # Return the first audio file for initial playback and all files for selection
-    return audio_files[0], gr.update(choices=audio_files, value=audio_files[0]), audio_files
 
 
-def get_selected_content(selected_title, sections):
+# Helper functions-------------------------------------------------------------
+def sanitize_filename(name):
+    """Replace invalid characters in filenames with underscores."""
+    return re.sub(r'[<>:"/\\|?*]', '_', name)
+
+def generate_redis_key(book_title, section_index, heading):
+    """Create a sanitized Redis key."""
+    return f"audio:{sanitize_filename(book_title)}:{section_index}:{sanitize_filename(heading)}"
+
+# Functions -------------------------------------------------------------------
+def update_connection_status():
     """
-    Retrieve the content of the selected section or the entire book if the title is selected.
+    Fetch the status of connected services from Redis and return formatted status text.
     """
-    if selected_title == sections[0].get("Title", "Unknown Book"):
-        return "\n".join([aggregate_section_content(selected_title, section, include_subsections=True) for section in sections])
+    try:
+        # Retrieve all health data keys from Redis
+        service_keys = list(redis_status_client.scan_iter("health:*"))
+        statuses = {}
 
-    for section in sections:
-        if section.get("Heading") == selected_title:
-            return aggregate_section_content(selected_title, section, include_subsections=True)
+        for key in service_keys:
+            # Parse the service name from the Redis key
+            service_name = key.split("health:")[-1]
+            service_status = redis_status_client.get(key)
 
-    return ""
+            if service_status:
+                try:
+                    # Parse the JSON string into a Python dictionary
+                    status_data = json.loads(service_status)
+                    statuses[service_name] = status_data.get("status", "Unknown")
+                except json.JSONDecodeError:
+                    statuses[service_name] = "Invalid Data"
+            else:
+                statuses[service_name] = "Unknown"
+
+        # Format the status for UI display
+        formatted_status = "\n".join([f"{name}: {status}" for name, status in statuses.items()])
+        logger.info(f"Service statuses updated: {formatted_status}")
+        return formatted_status
+    except Exception as e:
+        logger.error(f"Error updating connection status from Redis: {e}")
+        return "Error retrieving connection status."
+
+
+
+def retrieve_audio_from_redis_to_file(redis_key):
+    """Retrieve audio from Redis and save it as a temporary file."""
+    try:
+        audio_data = redis_audio_client.get(redis_key)
+        if not audio_data:
+            raise ValueError(f"No audio found in Redis for key: {redis_key}")
+
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_file.write(base64.b64decode(audio_data))
+        temp_file.close()
+        logger.info(f"Audio retrieved from Redis and saved to {temp_file.name}")
+        return temp_file.name
+    except Exception as e:
+        logger.error(f"Error retrieving audio from Redis for key {redis_key}: {e}")
+        return None
+
+
+def get_audio_files_grouped_by_book():
+    """Retrieve and organize audio files in Redis grouped by book title."""
+    grouped_files = {}
+    try:
+        for key in redis_audio_client.scan_iter("*"):
+            match = re.match(r"(?P<book>.*):(?P<index>[0-9.]+):(?P<section>.*)", key)
+            if match:
+                book_title = match.group("book")
+                index = match.group("index")
+                section_title = match.group("section")
+                grouped_files.setdefault(book_title, []).append((index, section_title))
+
+        for book_title in grouped_files:
+            grouped_files[book_title].sort(key=lambda x: tuple(map(int, x[0].split("."))))
+    except Exception as e:
+        logger.error(f"Error fetching grouped audio files: {e}")
+
+    return grouped_files
+
+
+def update_status(task_id):
+    status = fetch_status_from_redis(task_id)
+    if status == "completed":
+        audio_path = fetch_audio_result_from_redis(task_id)
+        return status, audio_path, True
+    return status, None, False
+
+# Polling mechanism to dynamically update service status every 10 seconds
+def poll_all_updates():
+    """
+    Poll for updates to all necessary components.
+    Updates:
+    - connection_status: Fetch service statuses from Redis.
+    - lang_dropdown: Fetch updated language list.
+    - studio_dropdown: Fetch updated speakers list.
+    """
+    try:
+        # Update connection status
+        connection_status_value = update_connection_status()
+
+        # Fetch languages and speakers
+        languages, studio_speakers = fetch_languages_and_speakers()
+        lang_update = gr.update(choices=languages)
+        speaker_update = gr.update(choices=list(studio_speakers.keys()))
+
+        logger.info("Polling updates completed successfully.")
+        return connection_status_value, lang_update, speaker_update
+    except Exception as e:
+        logger.error(f"Error during polling: {e}")
+        return "Error during polling", gr.update(choices=["en"]), gr.update(choices=[])
+
+
+
+# Gradio UI
+LANGUAGES, STUDIO_SPEAKERS = fetch_languages_and_speakers()
+audio_files_by_book = get_audio_files_grouped_by_book()
 
 # Gradio UI
 with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
-    connection_status = gr.Textbox(label="Service Status", value="Checking...", interactive=False)
-    gr.Timer(value=20).tick(update_connection_status, inputs=[], outputs=[connection_status])
+    connection_status = gr.Textbox(label="Service Status", value="Checking", interactive=False)
+    # Add a timer to dynamically fetch and update dropdown values every 10 seconds
+
+
 
     with gr.Tab("TTS"):
         with gr.Row():
             file_input = gr.File(label="Upload File")
-            speaker_type = gr.Radio(label="Speaker Type", choices=["Studio", "Cloned"], value="Studio")
-            studio_dropdown = gr.Dropdown(label="Speaker", choices=[], value=None)
+            speaker_type = gr.Radio(label="Speaker Type", choices=["Studio"], value="Studio")
+
+            # Initialize dropdowns with empty choices; these will be updated dynamically
+            studio_dropdown = gr.Dropdown(label="Speaker", choices=list(STUDIO_SPEAKERS.keys()), value="Claribel Dervla" if "Claribel Dervla" in STUDIO_SPEAKERS else None)
             lang_dropdown = gr.Dropdown(label="Language", choices=LANGUAGES, value="en" if "en" in LANGUAGES else None)
-            output_format_dropdown = gr.Dropdown(
-                label="Output Format",
-                choices=["wav", "mp3"],
-                value="wav",
-                interactive=True
-            )  # New dropdown for format selection
+            output_format_dropdown = gr.Dropdown(label="Output Format", choices=["wav", "mp3"], value="wav")
 
         with gr.Row():
             with gr.Column():
@@ -258,63 +415,67 @@ with gr.Blocks() as Book2Audio:
                 section_titles = gr.Dropdown(label="Select Section", choices=[], value=None, interactive=True)
             section_preview = gr.Textbox(label="Section Content", lines=20, interactive=True)
 
+        tts_button = gr.Button("Generate Audio")
+        progress_bar = gr.Slider(label="Progress", minimum=0, maximum=100, value=0, interactive=False)
         with gr.Row():
-            tts_button = gr.Button("Generate Audio")
-            generated_audio = gr.Audio(label="Generated Audio", interactive=False)  # For playback
-            file_selector = gr.Dropdown(label="Select Audio File", choices=[],
-                                        interactive=True)  # Dropdown for file selection
+            task_id_box = gr.Textbox(label="Task ID", interactive=False)
+            status_box = gr.Textbox(label="Task Status", interactive=False)
+            download_button = gr.Button("Download Audio", visible=False)
 
-            download_links = gr.Files(label="Download Generated Audio")  # For downloads
+        with gr.Row():
+            with gr.Row():
+                book_dropdown = gr.Dropdown(label="Select Book", choices=[], value=None, interactive=True)
+                section_dropdown = gr.Dropdown(label="Select Section", choices=[], value=None)
+
+            with gr.Column():
+                generated_audio = gr.Audio(label="Generated Audio", type="filepath", interactive=False)
 
         json_display = gr.Textbox(label="Full JSON Output", lines=20, interactive=False)
 
-    with gr.Tab("Clone a Speaker"):
-        upload_file = gr.Audio(label="Upload Reference Audio", type="filepath")
-        clone_speaker_name = gr.Textbox(label="Speaker Name", value="default_speaker")
-        clone_button = gr.Button("Clone Speaker")
-        cloned_speaker_dropdown = gr.Dropdown(label="Cloned Speaker", choices=list(CLONED_SPEAKERS.keys()), value=None)
+
 
         # Bind events
     file_input.change(
         process_file,
         inputs=[file_input],
-        outputs=[book_title, section_titles, sections_state, section_preview, json_display]
+        outputs=[book_title, section_titles, sections_state, section_preview, json_display],
     )
-    # Update audio player when a new file is selected
-    file_selector.change(
-        lambda selected_file: selected_file,  # Update the audio player with the selected file
-        inputs=[file_selector],
-        outputs=[generated_audio]
+    #Update audio player when a new file is selected
+    book_dropdown.change(
+        update_section_dropdown_and_audio,
+        inputs=[book_dropdown, gr.State(audio_files_by_book)],
+        outputs=[section_dropdown, generated_audio],
     )
-    speaker_type.change(
-        update_speakers,
-        inputs=[speaker_type],
-        outputs=[studio_dropdown]
-    )
-    section_titles.change(
-        update_section_content,
-        inputs=[book_title, section_titles, sections_state],
-        outputs=[section_preview]
-    )
-    # Event binding
     tts_button.click(
-        text_to_speech,
-        inputs=[
-            book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type,
-            output_format_dropdown
-        ],
-        outputs=[generated_audio, file_selector, download_links]
+        lambda *args: publish_audio_request_to_redis(*args),
+        inputs=[book_title, section_dropdown, sections_state, lang_dropdown, studio_dropdown, speaker_type,
+                output_format_dropdown],
+        outputs=[task_id_box],
+    )
+    status_box.change(
+        update_status,
+        inputs=[task_id_box],
+        outputs=[status_box, download_button],
     )
     process_btn.click(
         process_file,
         inputs=[file_input],
-        outputs=[book_title, section_titles, sections_state, section_preview, json_display]
+        outputs=[book_title, section_dropdown, sections_state],
     )
 
-    clone_button.click(
-        clone_speaker,
-        inputs=[upload_file, clone_speaker_name],
-        outputs=[upload_file, clone_speaker_name, cloned_speaker_dropdown]
+    # Fetch audio dynamically when a section is selected
+    section_dropdown.change(
+        lambda book, section: fetch_audio_from_redis(f"{book}:{section.split(' - ')[0]}:{section.split(' - ')[1]}"),
+        inputs=[book_dropdown, section_dropdown],
+        outputs=[generated_audio],
     )
+
+    section_titles.change(
+        update_section_content,
+        inputs=[book_title, section_titles, sections_state],
+        outputs=[section_preview],
+    )
+    gr.Timer(value=10).tick(poll_all_updates, inputs=[], outputs=[connection_status, lang_dropdown, studio_dropdown])
+
 
     Book2Audio.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")
