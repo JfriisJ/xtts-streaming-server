@@ -5,8 +5,7 @@ import time
 
 import gradio as gr
 import redis
-
-from audio_service import clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
+import base64
 from interfaces.producer_interface import ProducerInterface
 from mq import push_to_queue
 from health_service import check_service_health
@@ -24,6 +23,9 @@ logger = logging.getLogger(__name__)
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=0)
+
+
+
 class RedisProducer(ProducerInterface):
     def send_message(self, task, queue_name="audio_tasks"):
         """
@@ -51,6 +53,56 @@ def create_task_and_enqueue(book_title, sections, language, speaker, speaker_typ
     producer = RedisProducer()
     producer.send_message(task)
 
+
+def enqueue_clone_speaker_task(file_path, speaker_name, queue_name="clone_speaker_tasks"):
+    """
+    Enqueue a task to clone a speaker with the audio file encoded in Base64.
+
+    :param file_path: Path to the audio file for cloning.
+    :param speaker_name: Name of the cloned speaker.
+    :param queue_name: Redis queue name for the clone speaker task.
+    """
+    try:
+        # Read the audio file and encode it to Base64
+        with open(file_path, "rb") as audio_file:
+            encoded_audio = base64.b64encode(audio_file.read()).decode("utf-8")
+
+        # Create the task payload
+        task = {
+            "Type": "clone_speaker",
+            "AudioFileBase64": encoded_audio,
+            "SpeakerName": speaker_name
+        }
+
+        # Enqueue the task
+        redis_client.rpush(queue_name, json.dumps(task))
+        logger.info(f"Enqueued clone speaker task for '{speaker_name}' in queue '{queue_name}'")
+
+    except Exception as e:
+        logger.error(f"Error enqueuing clone speaker task: {e}")
+
+
+
+def fetch_languages_and_speakers():
+    """
+    Fetch languages and speakers data from Redis.
+    """
+    try:
+        # Fetch languages and speakers from Redis
+        languages = redis_client.get("data:tts:languages")
+        studio_speakers = redis_client.get("data:tts:studio_speakers")
+        cloned_speakers = redis_client.get("data:tts:cloned_speakers")
+
+        # Parse the JSON data if present
+        languages = json.loads(languages) if languages else []  # Expecting a list
+        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}  # Expecting a dictionary
+        cloned_speakers = json.loads(cloned_speakers) if cloned_speakers else {}  # Expecting a dictionary
+        return languages, studio_speakers, cloned_speakers
+    except Exception as e:
+        logger.error(f"Error fetching languages and speakers from Redis: {e}")
+        return [], {}, {}  # Return empty list and dictionary as fallback
+
+languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
 
 def update_connection_status():
     """
@@ -202,9 +254,9 @@ def update_speakers(speaker_type, current_selection=None):
     try:
         # Determine the list of speakers based on the selected type
         if speaker_type == "Studio":
-            speakers = list(STUDIO_SPEAKERS.keys())
+            speakers = list(studio_speakers.keys())
         elif speaker_type == "Cloned":
-            speakers = list(CLONED_SPEAKERS.keys())
+            speakers = list(cloned_speakers.keys())
         else:
             speakers = []
 
@@ -226,8 +278,6 @@ def update_speakers(speaker_type, current_selection=None):
     except Exception as e:
         logger.error(f"Error updating speakers: {e}")
         return gr.update(choices=[], value=None)
-
-
 
 
 def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
@@ -264,24 +314,8 @@ def get_selected_content(selected_title, sections):
             return aggregate_section_content(selected_title, section, include_subsections=True)
 
     return ""
-def fetch_languages_and_speakers():
-    """
-    Fetch languages and speakers data from Redis.
-    """
-    try:
-        # Fetch languages and speakers from Redis
-        languages = redis_client.get("data:tts:languages")
-        studio_speakers = redis_client.get("data:tts:studio_speakers")
 
-        # Parse the JSON data if present
-        languages = json.loads(languages) if languages else []  # Expecting a list
-        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}  # Expecting a dictionary
-        return languages, studio_speakers
-    except Exception as e:
-        logger.error(f"Error fetching languages and speakers from Redis: {e}")
-        return [], {}  # Return empty list and dictionary as fallback
 
-LANGUAGES, STUDIO_SPEAKERS = fetch_languages_and_speakers()
 # Gradio UI
 with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
@@ -293,7 +327,7 @@ with gr.Blocks() as Book2Audio:
             file_input = gr.File(label="Upload File")
             speaker_type = gr.Radio(label="Speaker Type", choices=["Studio", "Cloned"], value="Studio")
             studio_dropdown = gr.Dropdown(label="Speaker", choices=[], value=None)
-            lang_dropdown = gr.Dropdown(label="Language", choices=LANGUAGES, value="en" if "en" in LANGUAGES else None)
+            lang_dropdown = gr.Dropdown(label="Language", choices=languages, value="en" if "en" in languages else None)
             output_format_dropdown = gr.Dropdown(
                 label="Output Format",
                 choices=["wav", "mp3"],
@@ -322,7 +356,7 @@ with gr.Blocks() as Book2Audio:
         upload_file = gr.Audio(label="Upload Reference Audio", type="filepath")
         clone_speaker_name = gr.Textbox(label="Speaker Name", value="default_speaker")
         clone_button = gr.Button("Clone Speaker")
-        cloned_speaker_dropdown = gr.Dropdown(label="Cloned Speaker", choices=list(CLONED_SPEAKERS.keys()), value=None)
+        cloned_speaker_dropdown = gr.Dropdown(label="Cloned Speaker", choices=list(cloned_speakers.keys()), value=None)
 
         # Bind events
     file_input.change(
@@ -362,9 +396,9 @@ with gr.Blocks() as Book2Audio:
     )
 
     clone_button.click(
-        clone_speaker,
+        enqueue_clone_speaker_task,
         inputs=[upload_file, clone_speaker_name],
-        outputs=[upload_file, clone_speaker_name, cloned_speaker_dropdown]
+        outputs=[]
     )
 
     Book2Audio.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")

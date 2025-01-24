@@ -1,0 +1,5 @@
+{
+    "Type": "clone_speaker",
+    "AudioFileBase64": "encoded_audio",
+    "SpeakerName": "speaker_name"
+}
