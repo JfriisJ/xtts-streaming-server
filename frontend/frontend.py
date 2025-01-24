@@ -4,6 +4,8 @@ import logging
 import time
 
 import gradio as gr
+import redis
+
 from audio_service import clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
 from interfaces.producer_interface import ProducerInterface
 from mq import push_to_queue
@@ -19,7 +21,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True, db=0)
 class RedisProducer(ProducerInterface):
     def send_message(self, task, queue_name="audio_tasks"):
         """
@@ -246,7 +250,6 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
         output_format=output_format
     )
 
-    return None, [], "Task queued for audio generation."
 
 
 def get_selected_content(selected_title, sections):
@@ -261,7 +264,24 @@ def get_selected_content(selected_title, sections):
             return aggregate_section_content(selected_title, section, include_subsections=True)
 
     return ""
+def fetch_languages_and_speakers():
+    """
+    Fetch languages and speakers data from Redis.
+    """
+    try:
+        # Fetch languages and speakers from Redis
+        languages = redis_client.get("data:tts:languages")
+        studio_speakers = redis_client.get("data:tts:studio_speakers")
 
+        # Parse the JSON data if present
+        languages = json.loads(languages) if languages else []  # Expecting a list
+        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}  # Expecting a dictionary
+        return languages, studio_speakers
+    except Exception as e:
+        logger.error(f"Error fetching languages and speakers from Redis: {e}")
+        return [], {}  # Return empty list and dictionary as fallback
+
+LANGUAGES, STUDIO_SPEAKERS = fetch_languages_and_speakers()
 # Gradio UI
 with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
@@ -333,7 +353,7 @@ with gr.Blocks() as Book2Audio:
             book_title, section_titles, sections_state, lang_dropdown, studio_dropdown, speaker_type,
             output_format_dropdown
         ],
-        outputs=[generated_audio, file_selector, download_links]
+        outputs=[]
     )
     process_btn.click(
         process_file,

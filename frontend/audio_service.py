@@ -188,41 +188,38 @@ def split_text_into_tuples(sections):
     return tuples
 
 
-def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav",book_title="no-title"):
-    """
-    Generates audio for each tuple and saves the files in a folder named after the book_title.
-    """
+def generate_audio_from_tuples(
+    tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav", book_title="no-title"
+):
     logger.info("Starting audio generation from tuples.")
 
-
-    audio_files = []
+    redis_keys = []
 
     for section_index, section_name, content in tuples:
-        # Ensure no content is skipped
         if not content.strip():
             logger.warning(f"Section '{section_name}' (Index: {section_index}) has no content.")
             content = f"(No content for section '{section_name}')"
 
         try:
             logger.info(f"Generating audio for section '{section_name}' (Index: {section_index})")
-            logger.debug(f"Section content: {content[:500]}...")  # Log first 500 characters
-            file_path = text_to_audio(
+            redis_key = text_to_audio(
                 text=content,
                 heading=section_name,
-                section_index=section_index,  # Pass the hierarchical index
+                section_index=section_index,
                 lang=language,
                 speaker_type=speaker_type,
                 speaker_name_studio=studio_speaker,
                 output_format=output_format,
-                book_title=book_title
+                book_title=book_title,
             )
-            if file_path:
-                audio_files.append(file_path)
+            if redis_key:
+                redis_keys.append(redis_key)
         except Exception as e:
             logger.error(f"Error generating audio for section '{section_name}' (Index: {section_index}): {e}")
 
-    logger.info(f"Completed audio generation. Generated files: {audio_files}")
-    return audio_files
+    logger.info(f"Completed audio generation. Stored keys in Redis: {redis_keys}")
+    return redis_keys
+
 
 
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
@@ -352,16 +349,6 @@ def text_to_audio(
     logger.info(f"Converting text to audio for heading: '{heading}' (Index: {section_index})")
     logger.debug(f"Text to convert: {text[:100]}...")
 
-    # Clean the book title and ensure the directory exists
-    clean_book_title = clean_filename(book_title)
-    book_output_dir = os.path.join(OUTPUT, "generated_audios", clean_book_title)
-    os.makedirs(book_output_dir, exist_ok=True)
-
-    # Combine index and heading for the file name
-    file_name = clean_filename(f"{section_index}_{heading}")
-    file_path = os.path.join(book_output_dir, f"{file_name}.{output_format}")
-    logger.debug(f"Generated file path: {file_path}")
-
     embeddings = (
         STUDIO_SPEAKERS.get(speaker_name_studio)
         if speaker_type == "Studio"
@@ -371,15 +358,14 @@ def text_to_audio(
         logger.error(f"No embeddings found for speaker type '{speaker_type}' and speaker name.")
         return None
 
-    logger.debug(f"Using embeddings: {embeddings}")
+    # logger.debug(f"Using embeddings: {embeddings}")
 
     # Process the text into smaller chunks
     chunks = split_text_into_chunks(text)
 
-    cache_dir = os.path.join(OUTPUT, "cache")
-    os.makedirs(cache_dir, exist_ok=True)
-
     cached_audio_paths = []
+    audio_binary = b""
+
     for idx, chunk in enumerate(chunks):
         response = requests.post(
             TTS_SERVER_API + "/tts",
@@ -395,22 +381,17 @@ def text_to_audio(
             continue
 
         decoded_audio = base64.b64decode(response.content)
-        chunk_path = os.path.join(cache_dir, f"{file_name}_{idx + 1}.wav")
-        with open(chunk_path, "wb") as fp:
-            fp.write(decoded_audio)
-            cached_audio_paths.append(chunk_path)
+        audio_binary += decoded_audio
 
-    if len(cached_audio_paths) > 0:
-        combined_audio_path = concatenate_audios(cached_audio_paths, output_format, clean_book_title)
-        shutil.move(combined_audio_path, file_path)
-        shutil.rmtree(cache_dir)
-        logger.info(f"Saved audio file: {file_path}")
-        return file_path
+    if audio_binary:
+        # Save to Redis
+        redis_key = f"{book_title}:{section_index}:{heading}"
+        redis_client.set(redis_key, audio_binary)
+        logger.info(f"Saved audio for '{heading}' to Redis with key: {redis_key}")
+        return redis_key
     else:
-        logger.warning(f"No audio files generated for heading: '{heading}'")
+        logger.warning(f"No audio generated for heading: '{heading}'")
         return None
-
-
 
 
 def concatenate_audios(audio_paths, output_format="mp3", book_title="no-title", pauses=None):
@@ -502,3 +483,5 @@ def clean_filename(filename):
 
 
 
+if __name__ == "__main__":
+    consume_queue("audio_tasks")
