@@ -46,7 +46,8 @@ def fetch_audio_from_redis(redis_key):
 
 def update_section_content(book_title, selected_title, sections_state):
     """
-    Display the content for the book title, specific sections, or subsections.
+    Display the content for the book title or specific section. Only the selected section
+    should be included without aggregating nested subsections.
     """
     logger.debug(f"Selected title: {selected_title}")
     logger.debug(f"Sections state provided: {sections_state}")
@@ -57,27 +58,21 @@ def update_section_content(book_title, selected_title, sections_state):
 
     if selected_title == book_title:
         # Return pre-aggregated content for the entire book
-        full_book_content = sections_state.get("FullBookContent", "")
-        logger.debug(f"Using pre-aggregated content for book title: {full_book_content[:500]}...")
-        return full_book_content
+        return sections_state.get("FullBookContent", "")
 
-    # Traverse sections and subsections to find the selected title
+    # Traverse sections to find the exact match
     sections = sections_state.get("Sections", [])
-
     for section in sections:
-        # Search for the selected section
+        # Search directly for the selected section
         if section.get("Heading") == selected_title:
-            content = aggregate_section_with_subsections(section)
-            logger.debug(f"Content for section '{selected_title}': {content[:500]}...")
-            return content
+            return section.get("Content", "").strip()
 
         # Recursively search subsections
         result = find_section_content(section, selected_title)
         if result:
-            logger.debug(f"Content for subsection '{selected_title}': {result[:500]}...")
             return result
 
-    logger.warning(f"No matching section or subsection found for title: {selected_title}")
+    logger.warning(f"No matching section found for title: {selected_title}")
     return "No matching section or subsection found."
 
 
@@ -219,35 +214,56 @@ def fetch_status_from_redis(task_id):
 
 
 def publish_audio_request_to_redis(
-        book_title, section_heading, sections, language, speaker_name, speaker_type, output_format
+        book_title,
+        section_heading,
+        sections,
+        language,
+        speaker_name,
+        speaker_type,
+        output_format
 ):
     """
-    Publish an audio generation request to Redis and save it for persistence.
+    Publish an audio generation request to Redis with only the selected section content.
     """
+    logger.debug(f"Book title: {book_title}")
+    logger.debug(f"Section heading: {section_heading}")
+    logger.debug(f"Sections state: {sections}")
+    logger.debug(f"Language: {language}, Speaker: {speaker_name}, Output format: {output_format}")
+
+    if not section_heading:
+        logger.error("No section heading provided. Cannot publish audio request.")
+        return None
+
+    # Fetch the selected section content
+    selected_content = update_section_content(book_title, section_heading, sections)
+
+    if not selected_content or selected_content == "No matching section or subsection found.":
+        logger.error("Invalid content for the selected section. Cannot publish audio request.")
+        return None
+
     try:
         task_id = f"task_{int(time.time())}"
         request_data = {
             "task_id": task_id,
             "book_title": book_title,
-            "section_heading": section_heading or "Main Title",
-            "sections": sections,
+            "section_heading": section_heading,
+            "sections": {"Heading": section_heading, "Content": selected_content},
             "language": language,
             "speaker_name": speaker_name,
             "speaker_type": speaker_type,
             "output_format": output_format,
         }
 
-        # Save the task data persistently
         redis_task_client.set(f"task:{task_id}", json.dumps(request_data))
         redis_task_client.set(f"status:{task_id}", "queued")
-
-        # Publish the task to the channel
         redis_task_client.publish("audio_generation_channel", json.dumps(request_data))
 
         logger.info(f"Published task to Redis: {task_id}")
         return task_id
     except Exception as e:
         logger.error(f"Failed to publish audio request: {e}")
+        return None
+
 
 
 def update_section_dropdown_and_audio(book_title, audio_files_by_book):
@@ -447,10 +463,17 @@ with gr.Blocks() as Book2Audio:
         outputs=[section_dropdown, generated_audio],
     )
     tts_button.click(
-        lambda *args: publish_audio_request_to_redis(*args),
-        inputs=[book_title, section_dropdown, sections_state, lang_dropdown, studio_dropdown, speaker_type,
-                output_format_dropdown],
-        outputs=[task_id_box],
+        publish_audio_request_to_redis,
+        inputs=[
+            book_title,  # The book title textbox
+            section_titles,  # The dropdown value for section titles
+            sections_state,  # The current state containing all sections
+            lang_dropdown,  # Selected language
+            studio_dropdown,  # Selected speaker
+            speaker_type,  # Selected speaker type
+            output_format_dropdown  # Selected output format
+        ],
+        outputs=[task_id_box],  # Output task ID
     )
     status_box.change(
         update_status,
