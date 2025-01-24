@@ -118,6 +118,7 @@ def monitor_redis_for_tasks():
                         speaker_type=speaker_type,
                         output_format=output_format,
                     )
+
                     redis_task_client.set(f"status:{task_id}", "completed")
                     logger.info(f"Task {task_id} completed successfully")
                 except Exception as e:
@@ -165,17 +166,11 @@ def parse_sections(sections_data):
     return parsed_sections
 
 
-def aggregate_section_with_subsections(section, depth=1):
+def aggregate_section_with_subsections(section):
     """
-    Aggregate content of a section and its subsections, allowing up to 5 levels.
+    Aggregate content of a section and its subsections recursively.
     """
-    if depth > 5:
-        return ""  # Ignore deeper levels
-
-    heading_marker = "#" * depth  # Use up to 5 # for heading markers
-    heading = section.get("Heading", "").strip()
     content = section.get("Content", "")
-
     if isinstance(content, list):
         content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
     elif isinstance(content, str):
@@ -183,44 +178,53 @@ def aggregate_section_with_subsections(section, depth=1):
     else:
         content = ""
 
-    aggregated_content = f"{heading_marker} {heading}\n\n{content}"
+    subsections = section.get("Subsections", [])
+    for subsection in subsections:
+        sub_heading = subsection.get("Heading", "").strip()
+        sub_content = aggregate_section_with_subsections(subsection)
+        if sub_heading:
+            content += f"\n\n{sub_heading}\n{sub_content}"
 
-    for subsection in section.get("Subsections", []):
-        aggregated_content += "\n\n" + aggregate_section_with_subsections(subsection, depth + 1)
-
-    return aggregated_content
+    return content
 
 
 def split_text_into_tuples(sections):
     """
-    Splits the text into tuples of (index, section_name, content),
-    ensuring a maximum depth of 5 levels in the hierarchy.
+    Splits the book text into tuples of (index, section_name, content).
+    Ensures hierarchical indexes follow a consistent 4-level pattern.
     """
     tuples = []
-    section_counts = {}
+    section_counts = {}  # Track counts for each hierarchical level
 
-    def process_section(section, level=1, index_prefix="1"):
+    def process_section(section, level=0, index_prefix="0"):
         """
-        Recursively process sections and limit hierarchy to 5 levels.
+        Recursively processes sections and generates hierarchical indexes with consistent 4-level depth.
         """
-        if level > 5:  # Ignore levels deeper than 5
-            return
-
+        # Increment the count for the current level
         if index_prefix not in section_counts:
             section_counts[index_prefix] = 0
         section_counts[index_prefix] += 1
 
+        # Generate the next index
         index_parts = index_prefix.split(".")
-        if len(index_parts) < level:
-            index_parts.append("0")
-        index_parts[level - 1] = str(section_counts[index_prefix])
-        while len(index_parts) < 5:
-            index_parts.append("0")
+        if level <= len(index_parts):
+            index_parts[level - 1] = str(section_counts[index_prefix])
+        else:
+            index_parts.extend(['0'] * (level - len(index_parts) - 1))
+            index_parts.append(str(section_counts[index_prefix]))
 
-        current_index = ".".join(index_parts[:5])
+        # # Ensure the index has exactly 4 levels
+        # while len(index_parts) < 4:
+        #     index_parts.append("0")
+
+        # Reconstruct the index as a string
+        current_index = ".".join(index_parts[:4])
+
+        # Extract section details
         heading = section.get("Heading", "").strip()
         content = section.get("Content", "")
 
+        # Handle content as a string or list
         if isinstance(content, list):
             content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
         elif isinstance(content, str):
@@ -228,19 +232,25 @@ def split_text_into_tuples(sections):
         else:
             content = ""
 
-        if heading and content:  # Only add sections with valid heading and content
-            combined_content = f"{heading}\n\n{content}"
-            tuples.append((current_index, heading, combined_content))
+        # Combine section name and content
+        if content:
+            combined_content = f"{heading}\n\n{content}"  # Include section name followed by content
+        else:
+            combined_content = heading  # Use section name only if no content exists
+
+        # Add the current section as a tuple
+        tuples.append((current_index, heading, combined_content))
 
         # Process subsections recursively
-        for idx, subsection in enumerate(section.get("Subsections", []), start=1):
+        subsections = section.get("Subsections", [])
+        for subsection in subsections:
             process_section(subsection, level + 1, current_index)
 
-    for idx, section in enumerate(sections, start=1):
-        process_section(section, level=1, index_prefix=str(idx))
+    # Process each top-level section
+    for section in sections:
+        process_section(section)
 
     return tuples
-
 
 
 def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav",book_title="no-title"):
@@ -263,7 +273,7 @@ def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara
 
         try:
             logger.info(f"Generating audio for section '{section_name}' (Index: {section_index})")
-            cached_audio_file = text_to_audio(
+            text_to_audio(
                 text=content,
                 heading=section_name,
                 section_index=section_index,  # Pass the hierarchical index
@@ -273,53 +283,29 @@ def generate_audio_from_tuples(tuples, language="en", studio_speaker="Asya Anara
                 output_format=output_format,
                 book_title=book_title
             )
-            if cached_audio_file:
-                audio_files.append(cached_audio_file)
-            logger.info(f"Completed audio generation for section '{cached_audio_file}' (Index: {section_index})")
         except Exception as e:
             logger.error(f"Error generating audio for section '{section_name}' (Index: {section_index}): {e}")
 
     logger.info(f"Completed audio generation. Total cached audio files: {len(audio_files)}")
-    return audio_files
+
 
 
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
     """
     Splits the book into tuples and generates audio for each section in the specified format.
     """
-    logger.info(f"Starting audio generation for the selected section: '{selected_title}'")
-
-    def find_selected_section(section_list, selected_title):
-        """
-        Recursively find the section or subsection matching the selected title.
-        """
-        for section in section_list:
-            if section.get("Heading") == selected_title:
-                return [section]  # Wrap in a list for compatibility with split_text_into_tuples
-            if "Subsections" in section:
-                result = find_selected_section(section["Subsections"], selected_title)
-                if result:
-                    return result
-        return None
-
     if selected_title == book_title:
-        # Generate audio for the entire book
+        logger.info(f"Starting audio generation for the whole book: '{book_title}'")
         tuples = split_text_into_tuples(sections)
     else:
-        # Find the matching section or subsection
-        selected_section = find_selected_section(sections, selected_title)
-        if not selected_section:
-            logger.warning(f"No matching section found for '{selected_title}'")
-            return None
-
-        # Generate audio for the selected section or subsection
-        tuples = split_text_into_tuples(selected_section)
+        logger.info(f"Starting audio generation for the selected section: '{selected_title}'")
+        tuples = split_text_into_tuples([section for section in sections if section.get("Heading") == selected_title])
 
     if not tuples:
         logger.warning("No sections to process for audio generation.")
         return None
 
-    audio_files = generate_audio_from_tuples(
+    generate_audio_from_tuples(
         tuples,
         language=language,
         studio_speaker=studio_speaker,
@@ -327,13 +313,6 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
         output_format=output_format,
         book_title=book_title,
     )
-
-    if audio_files:
-        logger.info(f"Generated audio files: {audio_files}")
-        return audio_files
-    else:
-        logger.warning("No audio files generated.")
-        return None
 
 
 def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
@@ -344,55 +323,6 @@ def clone_speaker(upload_file, clone_speaker_name, cloned_speaker_names):
     [clone_speaker_name] = embeddings
     cloned_speaker_names.append(clone_speaker_name)
 
-
-def get_aggregated_content(selected_title, sections, include_subsections=True):
-    """
-    Aggregates content for the selected section and all its nested subsections.
-    Includes headings and content in a hierarchical structure.
-    """
-    logger.debug(f"Aggregating content for title: {selected_title}")
-    logger.debug(f"Sections provided: {json.dumps(sections, indent=2)}")  # Log sections for debugging
-
-    aggregated_content = []
-
-    def collect_content(section, include, depth=0):
-        indent = "  " * depth
-        heading = section.get("Heading", "").strip()
-        content = section.get("Content", "")
-
-        # Match the selected title to start including content
-        if heading.lower() == selected_title.lower():
-            include = True
-            logger.debug(f"{indent}Matched section: '{heading}'")
-
-        if include:
-            # Add the heading
-            if heading:
-                aggregated_content.append(f"{indent}{heading}")
-                logger.debug(f"{indent}Added heading: {heading}")
-
-            # Add the content (handle both string and list types)
-            if isinstance(content, str) and content.strip():
-                aggregated_content.append(f"{indent}  {content.strip()}")
-                logger.debug(f"{indent}Added content: {content[:100]}...")
-            elif isinstance(content, list):
-                for item in content:
-                    if isinstance(item, str):
-                        aggregated_content.append(f"{indent}  {item.strip()}")
-                        logger.debug(f"{indent}Added content item: {item.strip()}")
-
-        # Process subsections recursively
-        if include_subsections and "Subsections" in section:
-            for subsection in section.get("Subsections", []):
-                collect_content(subsection, include, depth + 1)
-
-    # Iterate over top-level sections
-    for section in sections:
-        collect_content(section, include=False)
-
-    result = "\n\n".join(filter(None, aggregated_content))
-    logger.info(f"Aggregated content: {result[:500]}...")  # Log the first 500 characters
-    return result
 
 def fetch_service_data():
     """
@@ -461,28 +391,27 @@ def text_to_audio(
             continue
 
         decoded_audio = base64.b64decode(response.content)
-        redis_safe_title = clean_filename(book_title)
-        redis_safe_heading = clean_filename(heading)
-        chunk_key = f"{redis_safe_title}:{redis_safe_heading}:{section_index}:{idx + 1}"
+        cache_chunk_key = f"{idx}:{clean_filename(book_title)}:{clean_filename(heading)}:{section_index}"
 
-        redis_audio_client.set(chunk_key, base64.b64encode(decoded_audio).decode("utf-8"))
-        cached_chunk_keys.append(chunk_key)
-        logger.info(f"Audio chunk {idx + 1} cached in Redis under key: {chunk_key}")
+
+        redis_audio_client.set(cache_chunk_key, base64.b64encode(decoded_audio).decode("utf-8"))
+        cached_chunk_keys.append(cache_chunk_key)
+        logger.info(f"Audio chunk {idx + 1} cached in Redis under key: {cache_chunk_key}")
 
     if not cached_chunk_keys:
         logger.warning(f"No audio chunks generated for heading: '{heading}'")
         return None
 
-    # Concatenate audio chunks and save the final file in Redis
-    audio_file = concatenate_audios(cached_chunk_keys, book_title, section_index, heading, output_format)
-    return audio_file
+    # Concatenate audio chunks and save file in Redis
+    concatenate_audios(cached_chunk_keys, book_title, section_index, heading, output_format)
 
 
-
-def concatenate_audios(cached_chunk_keys, book_title, section_index, heading="no-heading", output_format="mp3",pauses=None):
+def concatenate_audios(cached_chunk_keys, book_title, section_index, heading="no-heading", output_format="mp3", pauses=None):
     """
-    Combines multiple audio files into one with configurable pauses and allows saving in different formats.
+    Combines multiple audio chunks stored in Redis into one audio file and clears the cached chunks.
     """
+
+    logger.info(f"Combining audio chunks for heading: '{heading}' (Index: {section_index})")
     if pauses is None:
         pauses = {"sentence": 500, "heading": 1000}  # Default pauses in milliseconds
 
@@ -490,34 +419,50 @@ def concatenate_audios(cached_chunk_keys, book_title, section_index, heading="no
     pause_between_sentences = AudioSegment.silent(duration=pauses["sentence"])
     pause_between_heading_and_text = AudioSegment.silent(duration=pauses["heading"])
 
-    for idx, path in enumerate(cached_chunk_keys):
-        audio = AudioSegment.from_file(path)
-        if idx == 0:
-            combined += audio + pause_between_heading_and_text
-        else:
-            combined += audio + pause_between_sentences
+    for idx, redis_key in enumerate(cached_chunk_keys):
+        try:
+            # Fetch audio chunk data from Redis
+            audio_data = redis_audio_client.get(redis_key)
+            if not audio_data:
+                logger.error(f"Audio chunk not found in Redis for key: {redis_key}")
+                continue
 
-    combined = combined[:-len(pause_between_sentences)]  # Remove the final pause
+            # Decode the audio data
+            audio_chunk = AudioSegment.from_file(io.BytesIO(base64.b64decode(audio_data)), format="wav")
 
-    # Ensure the output folder exists
-    clean_title = clean_filename(heading)
-    clean_book_title = book_title(book_title)
+            # Add pauses
+            if idx == 0:
+                combined += audio_chunk + pause_between_heading_and_text
+            else:
+                combined += audio_chunk + pause_between_sentences
+        except Exception as e:
+            logger.error(f"Error processing audio chunk for key {redis_key}: {e}")
 
-    # Save combined audio to Redis
-    final_key = f"{clean_book_title}:{clean_title}:{section_index}"
+    # Remove the final pause
+    combined = combined[:-len(pause_between_sentences)]
+
+    # Save the combined audio back to Redis
+    final_key = f"{clean_filename(book_title)}:{clean_filename(heading)}:{section_index}"
     try:
         with io.BytesIO() as output_buffer:
             combined.export(output_buffer, format=output_format)
             redis_audio_client.set(final_key, base64.b64encode(output_buffer.getvalue()).decode("utf-8"))
             logger.info(f"Combined audio saved in Redis under key: {final_key}")
+
+        # Clear cached audio chunks from Redis
+        for redis_key in cached_chunk_keys:
+            try:
+                redis_audio_client.delete(redis_key)
+                logger.info(f"Cleared cached audio chunk from Redis: {redis_key}")
+            except Exception as e:
+                logger.error(f"Error clearing cached audio chunk {redis_key} from Redis: {e}")
+
     except Exception as e:
         logger.error(f"Error saving combined audio for section '{heading}' to Redis: {e}")
         return None
 
-    return final_key
 
-
-def split_text_into_chunks(text, max_chars=250, max_tokens=350):
+def split_text_into_chunks(text, max_chars=250, max_tokens=400):
     """
     Splits text into chunks based on character and token limits, breaking at sentence boundaries.
     """
