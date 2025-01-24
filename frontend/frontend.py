@@ -235,19 +235,20 @@ def publish_audio_request_to_redis(
         return None
 
     # Fetch the selected section content
-    selected_content = update_section_content(book_title, section_heading, sections)
-
-    if not selected_content or selected_content == "No matching section or subsection found.":
+    selected_section = find_selected_section(book_title, section_heading, sections)
+    if not selected_section:
         logger.error("Invalid content for the selected section. Cannot publish audio request.")
         return None
 
     try:
         task_id = f"task_{int(time.time())}"
+        transformed_sections = transform_sections(selected_section)
+
         request_data = {
             "task_id": task_id,
             "book_title": book_title,
             "section_heading": section_heading,
-            "sections": {"Heading": section_heading, "Content": selected_content},
+            "sections": transformed_sections,
             "language": language,
             "speaker_name": speaker_name,
             "speaker_type": speaker_type,
@@ -265,6 +266,33 @@ def publish_audio_request_to_redis(
         return None
 
 
+def transform_sections(section):
+    """
+    Recursively transform the sections to the required JSON structure.
+    """
+    transformed = {
+        "Heading": section.get("Heading", ""),
+        "Content": section.get("Content", ""),
+        "Subsections": [
+            transform_sections(sub) for sub in section.get("Subsections", [])
+        ]
+    }
+    return transformed
+
+
+def find_selected_section(book_title, selected_heading, sections):
+    """
+    Locate the selected section or subsection based on the heading.
+    """
+    if sections.get("Heading") == selected_heading:
+        return sections
+
+    for subsection in sections.get("Sections", []):
+        result = find_selected_section(book_title, selected_heading, subsection)
+        if result:
+            return result
+
+    return None
 
 def update_section_dropdown_and_audio(book_title, audio_files_by_book):
     """
