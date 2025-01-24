@@ -1,8 +1,8 @@
 import json
-import os
 import logging
 import time
-
+import os
+import tempfile
 import gradio as gr
 import redis
 import base64
@@ -34,13 +34,29 @@ class RedisProducer(ProducerInterface):
         push_to_queue(task, queue_name)
 
 
-def create_task_and_enqueue(book_title, sections, language, speaker, speaker_type, output_format):
+def create_task_and_enqueue(book_title, selected_title, sections, language, speaker, speaker_type, output_format):
     """
-    Create a task and enqueue it in Redis.
+    Create a task for the selected section and enqueue it in Redis.
+
+    :param book_title: The title of the book.
+    :param selected_title: The selected section title.
+    :param sections: All sections of the book.
+    :param language: The language of the audio.
+    :param speaker: The name of the speaker.
+    :param speaker_type: The type of the speaker (e.g., "Studio", "Cloned").
+    :param output_format: The format of the generated audio.
     """
+    # Filter the selected section(s)
+    selected_sections = get_selected_content(selected_title, sections)
+
+    if not selected_sections:
+        logger.warning(f"No matching section found for '{selected_title}'. Task not created.")
+        return
+
+    # Create the task
     task = {
         "Title": book_title,
-        "Sections": sections,
+        "Sections": selected_sections,  # Include only the selected sections
         "Language": language,
         "Speaker": speaker,
         "SpeakerType": speaker_type,
@@ -50,8 +66,11 @@ def create_task_and_enqueue(book_title, sections, language, speaker, speaker_typ
         "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "Priority": "normal"
     }
-    producer = RedisProducer()
-    producer.send_message(task)
+
+    # Enqueue the task
+    redis_client.rpush("audio_tasks", json.dumps(task))
+    logger.info(f"Enqueued task for '{selected_title}' from book '{book_title}'")
+
 
 
 def enqueue_clone_speaker_task(file_path, speaker_name, queue_name="clone_speaker_tasks"):
@@ -102,7 +121,6 @@ def fetch_languages_and_speakers():
         logger.error(f"Error fetching languages and speakers from Redis: {e}")
         return [], {}, {}  # Return empty list and dictionary as fallback
 
-languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
 
 def update_connection_status():
     """
@@ -293,6 +311,7 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
     # Enqueue the task
     create_task_and_enqueue(
         book_title=book_title,
+        selected_title=selected_title,
         sections=sections,
         language=language,
         speaker=speaker_name,
@@ -302,20 +321,131 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
 
 
 
+
 def get_selected_content(selected_title, sections):
     """
     Retrieve the content of the selected section or the entire book if the title is selected.
+
+    :param selected_title: The title of the selected section or the entire book.
+    :param sections: The list of all sections in the book.
+    :return: The selected section or subsections as a list.
     """
     if selected_title == sections[0].get("Title", "Unknown Book"):
-        return "\n".join([aggregate_section_content(selected_title, section, include_subsections=True) for section in sections])
+        # Return the entire book content
+        return sections
 
     for section in sections:
         if section.get("Heading") == selected_title:
-            return aggregate_section_content(selected_title, section, include_subsections=True)
+            # Return the selected section and its subsections
+            return [section]
 
-    return ""
+        # Recursively search subsections
+        result = find_selected_section(section.get("Subsections", []), selected_title)
+        if result:
+            return result
+
+    return []  # Return an empty list if no matching section is found
 
 
+def find_selected_section(subsections, selected_title):
+    """
+    Recursively find the section or subsection matching the selected title.
+
+    :param subsections: List of subsections to search.
+    :param selected_title: The title to match.
+    :return: A list containing the matching section or subsection, or None if not found.
+    """
+    for subsection in subsections:
+        if subsection.get("Heading") == selected_title:
+            return [subsection]
+
+        # Recursively search deeper subsections
+        result = find_selected_section(subsection.get("Subsections", []), selected_title)
+        if result:
+            return result
+
+    return None
+
+def get_books():
+    """
+    Retrieve all unique book titles from Redis.
+    """
+    keys = redis_client.keys("*:*:*")  # Match all keys with the {Book}:{Index}:{Section} pattern
+    books = set()
+    for key in keys:
+        book_title = key.split(":")[0]  # Extract the book title
+        books.add(book_title)
+    return list(books)
+
+
+def get_sections_for_book(book_title):
+    """
+    Retrieve sections for a specific book from Redis.
+
+    :param book_title: Title of the book.
+    :return: List of section titles.
+    """
+    keys = redis_client.keys(f"{book_title}:*:*")  # Match all keys for the book
+    sections = []
+    for key in keys:
+        # Redis keys are strings in Python 3, no need to decode
+        _, _, section_name = key.split(":", 2)  # Extract the section name
+        sections.append(section_name)
+    return sorted(sections)  # Sort to maintain order
+
+
+
+import tempfile
+
+def play_and_prepare_download(book_title, section_name):
+    """
+    Retrieve and play the audio for the selected book and section.
+    Prepare the audio file for download.
+
+    :param book_title: Title of the book.
+    :param section_name: Name of the section.
+    :return: Tuple of file path for playback and download, or None if audio is not found.
+    """
+    redis_key = f"{book_title}:{section_name}"  # Redis key for the audio
+    audio_binary = redis_client.get(redis_key)
+
+    if not audio_binary:
+        logger.warning(f"Audio not found for key: {redis_key}")
+        return None, None  # Return None for both playback and download
+
+    # Save the audio to a temporary file for playback and download
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    with open(temp_file.name, "wb") as f:
+        f.write(audio_binary)
+
+    logger.info(f"Prepared audio for playback and download: {temp_file.name}")
+    return temp_file.name, temp_file.name  # Return the file path for both playback and download
+
+
+
+def update_audio_metadata(book_title, sections):
+    """
+    Dynamically update Redis with metadata about audio files.
+
+    :param book_title: Title of the book.
+    :param sections: List of section titles.
+    """
+    redis_key = "audio_metadata"
+    audio_metadata = redis_client.get(redis_key)
+    if not audio_metadata:
+        metadata = {}
+    else:
+        metadata = json.loads(audio_metadata)
+
+    # Update metadata with the new book and sections
+    metadata[book_title] = {"Sections": sections}
+    redis_client.set(redis_key, json.dumps(metadata))
+    logger.info(f"Updated audio metadata for book '{book_title}'")
+
+
+get_books()
+
+languages, studio_speakers,cloned_speakers = fetch_languages_and_speakers()
 # Gradio UI
 with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
@@ -328,12 +458,7 @@ with gr.Blocks() as Book2Audio:
             speaker_type = gr.Radio(label="Speaker Type", choices=["Studio", "Cloned"], value="Studio")
             studio_dropdown = gr.Dropdown(label="Speaker", choices=[], value=None)
             lang_dropdown = gr.Dropdown(label="Language", choices=languages, value="en" if "en" in languages else None)
-            output_format_dropdown = gr.Dropdown(
-                label="Output Format",
-                choices=["wav", "mp3"],
-                value="wav",
-                interactive=True
-            )  # New dropdown for format selection
+            output_format_dropdown = gr.Dropdown( label="Output Format",choices=["wav", "mp3"],value="wav",interactive=True)  # New dropdown for format selection
 
         with gr.Row():
             with gr.Column():
@@ -342,13 +467,17 @@ with gr.Blocks() as Book2Audio:
                 section_titles = gr.Dropdown(label="Select Section", choices=[], value=None, interactive=True)
             section_preview = gr.Textbox(label="Section Content", lines=20, interactive=True)
 
-        with gr.Row():
-            tts_button = gr.Button("Generate Audio")
-            generated_audio = gr.Audio(label="Generated Audio", interactive=False)  # For playback
-            file_selector = gr.Dropdown(label="Select Audio File", choices=[],
-                                        interactive=True)  # Dropdown for file selection
+        tts_button = gr.Button("Generate Audio")
+        progress_bar = gr.Slider(label="Progress", minimum=0, maximum=100, value=0, interactive=False)
+        with gr.Column():
+            with gr.Row():
+                book_dropdown = gr.Dropdown(label="Select Book", choices=get_books(), value=None)
+                section_dropdown = gr.Dropdown(label="Select Section", choices=[], value=None)
 
-            download_links = gr.Files(label="Download Generated Audio")  # For downloads
+            with gr.Row():
+                audio_player = gr.Audio(label="Audio Preview", type="filepath")
+                generated_audio = gr.Audio(label="Generated Audio", interactive=False)  # For playback
+                download_button = gr.File(label="Download Audio")  # For downloading files
 
         json_display = gr.Textbox(label="Full JSON Output", lines=20, interactive=False)
 
@@ -358,6 +487,18 @@ with gr.Blocks() as Book2Audio:
         clone_button = gr.Button("Clone Speaker")
         cloned_speaker_dropdown = gr.Dropdown(label="Cloned Speaker", choices=list(cloned_speakers.keys()), value=None)
 
+    # Update sections dropdown dynamically based on selected book
+    book_dropdown.change(
+        lambda book_title: gr.update(choices=get_sections_for_book(book_title)),
+        inputs=[book_dropdown],
+        outputs=[section_dropdown]
+    )
+    # Play and prepare download when a section is selected
+    section_dropdown.change(
+        lambda book, section: play_and_prepare_download(book, section),
+        inputs=[book_dropdown, section_dropdown],
+        outputs=[audio_player, download_button]
+    )
         # Bind events
     file_input.change(
         process_file,
@@ -365,11 +506,7 @@ with gr.Blocks() as Book2Audio:
         outputs=[book_title, section_titles, sections_state, section_preview, json_display]
     )
     # Update audio player when a new file is selected
-    file_selector.change(
-        lambda selected_file: selected_file,  # Update the audio player with the selected file
-        inputs=[file_selector],
-        outputs=[generated_audio]
-    )
+
     speaker_type.change(
         update_speakers,
         inputs=[speaker_type],
