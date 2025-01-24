@@ -3,7 +3,7 @@ import os
 
 import requests
 
-TTS_SERVER_API = os.getenv("TTS_SERVER_API", "http://localhost:8000")
+TTS_SERVER_API = os.getenv("TTS_SERVER_API", "http://localhost:4001")
 CONVERTER_API = os.getenv("CONVERTER_API", "http://localhost:5000")
 
 

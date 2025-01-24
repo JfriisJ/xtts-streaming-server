@@ -19,8 +19,6 @@ COPY . .
 ENV NVIDIA_DISABLE_REQUIRE=0
 
 ENV NUM_THREADS=2
-EXPOSE 80
-#EXPOSE 5002
-#EXPOSE 5003
-CMD ["uvicorn", "xtts:app", "--host", "0.0.0.0", "--port", "80"]
-#CMD ["uvicorn", "vits:app", "--host", "0.0.0.0", "--port", "5002"]
+EXPOSE 4001
+
+CMD ["uvicorn", "xtts:app", "--host", "0.0.0.0", "--port", "4001"]

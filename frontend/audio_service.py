@@ -4,12 +4,16 @@ import logging
 import os
 import shutil
 import time
+
+import redis
 from transformers import GPT2TokenizerFast
 import re
 
 import requests
 from pydub import AudioSegment
 
+from interfaces.consumer_interface import ConsumerInterface
+from mq import validate_task
 from health_service import TTS_SERVER_API
 
 # Initialize the tokenizer
@@ -51,6 +55,62 @@ if not os.path.exists(OUTPUT):
     os.mkdir(OUTPUT)
     os.mkdir(os.path.join(OUTPUT, "cloned_speakers"))
     os.mkdir(os.path.join(OUTPUT, "generated_audios"))
+
+redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+
+
+class RedisConsumer(ConsumerInterface):
+    def consume_message(self, queue_name="audio_tasks"):
+        """
+        Consume tasks from the Redis queue and process them.
+        """
+        logger.info(f"Listening to queue: {queue_name}")
+        while True:
+            try:
+                _, task_json = redis_client.blpop(queue_name)
+                task = json.loads(task_json)
+
+                if not validate_task(task):
+                    logger.warning("Invalid task skipped.")
+                    continue
+
+                logger.info(f"Processing task: {task}")
+
+                # Process the task (e.g., generate audio)
+                self.process_task(task)
+
+            except Exception as e:
+                logger.error(f"Error processing task: {e}")
+
+def consume_queue(queue_name="audio_tasks"):
+    """
+    Consume tasks from the Redis queue and process them.
+    """
+    logger.info(f"Listening to queue: {queue_name}")
+    while True:
+        try:
+            # Blocking call to pop a task from the queue
+            _, task_json = redis_client.blpop(queue_name)
+            task = json.loads(task_json)
+
+            # Validate task
+            if not validate_task(task):
+                logger.warning("Invalid task skipped.")
+                continue
+
+            logger.info(f"Processing task: {task}")
+
+            # Process the task
+            generate_audio_from_tuples(
+                tuples=split_text_into_tuples(task["Sections"]),
+                language=task["Language"],
+                studio_speaker=task["Speaker"],
+                speaker_type=task["SpeakerType"],
+                output_format=task["AudioFormat"],
+                book_title=task["Title"]
+            )
+        except Exception as e:
+            logger.error(f"Error processing task: {e}")
 
 
 def aggregate_section_with_subsections(section, depth=1):

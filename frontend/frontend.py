@@ -1,8 +1,12 @@
 import json
 import os
 import logging
+import time
+
 import gradio as gr
-from audio_service import generate_audio, clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
+from audio_service import clone_speaker, CLONED_SPEAKERS, LANGUAGES, STUDIO_SPEAKERS
+from interfaces.producer_interface import ProducerInterface
+from mq import push_to_queue
 from health_service import check_service_health
 from text_service import extract_text_from_file, present_text_to_ui, aggregate_section_content
 
@@ -14,6 +18,35 @@ logging.basicConfig(
     handlers=[logging.FileHandler("/app/logs/frontend_api.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+
+class RedisProducer(ProducerInterface):
+    def send_message(self, task, queue_name="audio_tasks"):
+        """
+        Push a task to the Redis queue.
+        """
+        push_to_queue(task, queue_name)
+
+
+def create_task_and_enqueue(book_title, sections, language, speaker, speaker_type, output_format):
+    """
+    Create a task and enqueue it in Redis.
+    """
+    task = {
+        "Title": book_title,
+        "Sections": sections,
+        "Language": language,
+        "Speaker": speaker,
+        "SpeakerType": speaker_type,
+        "AudioFormat": output_format,
+        "ID": f"{book_title}-{int(time.time())}",
+        "Status": "pending",
+        "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "Priority": "normal"
+    }
+    producer = RedisProducer()
+    producer.send_message(task)
+
 
 def update_connection_status():
     """
@@ -195,28 +228,25 @@ def update_speakers(speaker_type, current_selection=None):
 
 def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
     """
-    Generate audio for the selected title or entire book and return the paths for playback and selection.
+    Queue a task for audio generation via Redis.
     """
-    logger.info(f"Generating audio for: {selected_title or book_title}")
+    logger.info(f"Queueing audio generation task for: {selected_title or book_title}")
     logger.debug(f"Language: {language}, Speaker: {speaker_name}, Type: {speaker_type}, Format: {output_format}")
     logger.debug(f"Sections state: {json.dumps(sections_state, indent=2)}")
 
     sections = sections_state.get("Sections", [])
-    audio_files = generate_audio(
-        book_title,
-        selected_title,
-        sections,
+
+    # Enqueue the task
+    create_task_and_enqueue(
+        book_title=book_title,
+        sections=sections,
         language=language,
-        studio_speaker=speaker_name,
+        speaker=speaker_name,
         speaker_type=speaker_type,
         output_format=output_format
     )
 
-    if not audio_files:
-        return None, [], "No audio files generated. Check the section(s) for content."
-
-    # Return the first audio file for initial playback and all files for selection
-    return audio_files[0], gr.update(choices=audio_files, value=audio_files[0]), audio_files
+    return None, [], "Task queued for audio generation."
 
 
 def get_selected_content(selected_title, sections):
