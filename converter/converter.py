@@ -2,6 +2,8 @@ from fastapi import FastAPI, UploadFile, HTTPException
 import os
 import logging
 from converters.md_to_json import md_to_json
+from mq.consumer import RedisConsumer
+from mq.producer import RedisProducer
 from spellcheck import process_json_content
 
 
@@ -26,6 +28,8 @@ OUTPUT_FOLDER = "/app/outputs"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+producer = RedisProducer()
+consumer = RedisConsumer()
 
 @app.post("/convert")
 async def convert(file: UploadFile):

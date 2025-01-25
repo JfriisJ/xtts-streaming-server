@@ -7,7 +7,6 @@ import redis
 import base64
 from mq.producer import RedisProducer
 from mq.consumer import RedisConsumer
-from mq.mq import validate_task
 from health_service import check_service_health
 from text_service import extract_text_from_file, present_text_to_ui, aggregate_section_content
 
@@ -24,6 +23,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 try:
     redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=0)
+    redis_tts_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=4)
 except Exception as e:
     logger.error(f"Error connecting to Redis: {e}")
 
@@ -105,9 +105,9 @@ def fetch_languages_and_speakers():
     """
     try:
         # Fetch languages and speakers from Redis
-        languages = redis_client.get("data:tts:languages")
-        studio_speakers = redis_client.get("data:tts:studio_speakers")
-        cloned_speakers = redis_client.get("data:tts:cloned_speakers")
+        languages = redis_tts_client.get("data:tts:languages")
+        studio_speakers = redis_tts_client.get("data:tts:studio_speakers")
+        cloned_speakers = redis_tts_client.get("data:tts:cloned_speakers")
 
         # Parse the JSON data if present
         languages = json.loads(languages) if languages else []  # Expecting a list

@@ -1,0 +1,125 @@
+{
+  "type": "object",
+  "properties": {
+    "Title": {
+      "type": "string",
+      "description": "The title of the document."
+    },
+    "Sections": {
+      "type": "array",
+      "description": "An array of sections in the document.",
+      "items": {
+        "$ref": "#/definitions/section"
+      }
+    },
+    "Language": {
+      "type": "string",
+      "description": "The language of the audio or content, following ISO 639-1 standards."
+    },
+    "Speaker": {
+      "type": "string",
+      "description": "The name or identifier of the speaker."
+    },
+    "SpeakerType": {
+      "type": "string",
+      "enum": [
+        "Studio",
+        "Cloned",
+        "human",
+        "AI",
+        "hybrid"
+      ],
+      "description": "The type of speaker delivering the audio."
+    },
+    "AudioFormat": {
+      "type": "string",
+      "enum": [
+        "mp3",
+        "wav",
+        "ogg",
+        "flac"
+      ],
+      "description": "The format of the audio file."
+    },
+    "ID": {
+      "type": "string",
+      "description": "A unique identifier for the content or audio job."
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "failed"
+      ],
+      "description": "The current status of the audio processing task."
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The timestamp when the content was created or submitted."
+    },
+    "Priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "normal",
+        "high"
+      ],
+      "description": "The priority level for processing the task."
+    },
+    "PlaybackSpeed": {
+      "type": "number",
+      "minimum": 0.5,
+      "maximum": 2.0,
+      "description": "The playback speed multiplier for the audio."
+    },
+    "VoiceStyle": {
+      "type": "string",
+      "description": "The style or tone of the voice, such as 'formal', 'casual', or 'narrative'."
+    }
+  },
+  "required": [
+    "Title",
+    "Sections",
+    "Language",
+    "AudioFormat",
+    "ID"
+  ],
+  "definitions": {
+    "section": {
+      "type": "object",
+      "properties": {
+        "Heading": {
+          "type": "string",
+          "description": "The heading of the section."
+        },
+        "Content": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The content of the section as a string."
+            },
+            {
+              "type": "array",
+              "description": "The content of the section as an array of strings.",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "Subsections": {
+          "type": "array",
+          "description": "An array of subsections within the section.",
+          "items": {
+            "$ref": "#/definitions/section"
+          }
+        }
+      },
+      "required": ["Heading"],
+      "additionalProperties": false
+    }
+  }
+}
