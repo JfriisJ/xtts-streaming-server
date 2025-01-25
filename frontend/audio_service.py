@@ -1,17 +1,20 @@
 import base64
+import io
 import json
 import logging
 import os
 
-
 import redis
 from transformers import GPT2TokenizerFast
 import re
+from pydub import AudioSegment
 
 import requests
-
-from interfaces.consumer_interface import ConsumerInterface
-from mq import validate_task
+import uuid
+import time
+from mq.producer import RedisProducer
+from mq.consumer import RedisConsumer
+from mq.mq import validate_task
 from health_service import TTS_SERVER_API
 
 # Initialize the tokenizer
@@ -25,32 +28,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+try:
+    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=0)
+except Exception as e:
+    logger.error(f"Error connecting to Redis: {e}")
 
-class RedisConsumer(ConsumerInterface):
-    def consume_message(self, queue_name="audio_tasks"):
-        """
-        Consume tasks from the Redis queue and process them.
-        """
-        logger.info(f"Listening to queue: {queue_name}")
-        while True:
-            try:
-                _, task_json = redis_client.blpop(queue_name)
-                task = json.loads(task_json)
+producer = RedisProducer()
+consumer = RedisConsumer()
 
-                if not validate_task(task):
-                    logger.warning("Invalid task skipped.")
-                    continue
 
-                logger.info(f"Processing task: {task}")
-
-                # Process the task (e.g., generate audio)
-                self.process_task(task)
-
-            except Exception as e:
-                logger.error(f"Error processing task: {e}")
-
-def consume_queue(queue_name="audio_tasks"):
+def consume_queue(queue_name="audio_format_tasks"):
     """
     Consume tasks from the Redis queue and process them.
     """
@@ -79,6 +68,31 @@ def consume_queue(queue_name="audio_tasks"):
             )
         except Exception as e:
             logger.error(f"Error processing task: {e}")
+
+def send_tts_job(text, language, speaker_embedding, gpt_cond_latent, queue_name="generate_audio"):
+    """
+    Send a TTS job to the MQ and wait for the result.
+    """
+    task_id = str(uuid.uuid4())
+    task = {
+        "task_id": task_id,
+        "text": text,
+        "language": language,
+        "speaker_embedding": speaker_embedding,
+        "gpt_cond_latent": gpt_cond_latent,
+    }
+
+    # Push task to `audio_tasks` queue
+    producer.send_message(task, queue_name)
+    print(f"Task {task_id} sent to queue")
+
+    # Poll `audio_results` queue for the result
+    while True:
+        result = consumer.consume_message("audio_results")
+        if result and result["task_id"] == task_id:
+            print(f"Received result for task {task_id}")
+            return result["audio_base64"]
+        time.sleep(1)  # Avoid busy waiting
 
 
 def consume_clone_speaker_task(queue_name="clone_speaker_tasks"):
@@ -452,15 +466,11 @@ def text_to_audio(
 
         # Concatenate audio chunks and save final audio to Redis
         if redis_keys:
-            concatenate_audios(redis_keys, book_title, section_index, heading)
+            concatenate_audios(redis_keys,output_format, book_title, section_index, heading)
         else:
             logger.warning(f"No audio generated for heading: '{heading}'")
 
-
-import io
-from pydub import AudioSegment
-
-def concatenate_audios(redis_keys, book_title="no-title", section_index="1", heading="unknown", pauses=None):
+def concatenate_audios(redis_keys, output_format="wav",  book_title="no-title", section_index="1", heading="unknown", pauses=None):
     """
     Combines multiple audio files from Redis into one, adding pauses between sentences, and saves the final audio to Redis.
 
@@ -485,7 +495,7 @@ def concatenate_audios(redis_keys, book_title="no-title", section_index="1", hea
             continue
 
         # Load audio from binary
-        audio = AudioSegment.from_file(io.BytesIO(audio_binary), format="wav")
+        audio = AudioSegment.from_file(io.BytesIO(audio_binary), format=output_format)
 
         # Add pause and concatenate
         if idx == 0:

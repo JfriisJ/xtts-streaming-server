@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string"
+    },
+    "text": {
+      "type": "string"
+    },
+    "language": {
+      "type": "string"
+    },
+    "speaker_embedding": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      }
+    },
+    "gpt_cond_latent": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        }
+      }
+    }
+  },
+  "required": [
+    "task_id",
+    "text",
+    "language",
+    "speaker_embedding",
+    "gpt_cond_latent"
+  ]
+}
