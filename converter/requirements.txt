@@ -3,3 +3,5 @@ pyspellchecker
 python-multipart
 uvicorn[standard]
 pyspellchecker
+redis
+json

@@ -3,77 +3,171 @@ import io
 import json
 import logging
 import os
+import re
+import time
+import uuid
+import threading
+import signal
+from typing import List, Dict, Any
 
 import redis
-from transformers import GPT2TokenizerFast
-import re
-from pydub import AudioSegment
-
 import requests
-import uuid
-import time
-from mq.producer import RedisProducer
-from mq.consumer import RedisConsumer
+from pydub import AudioSegment
+from transformers import GPT2TokenizerFast
+
 from mq.mq import validate_task
-from health_service import TTS_SERVER_API
 
 # Initialize the tokenizer
 tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
 
-# Setup logging
+# Logging setup
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
+# Redis Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_DB_TTS = 4  # Database for TTS data
+
+# Queue Definitions
+TASK_QUEUES = ["audio_tasks", "speaker_tasks", "text_tasks"]
+RESULT_QUEUE = "audio_results"
+
+# TTS API URL
+TTS_SERVER_API = os.getenv("TTS_SERVER_API", "http://localhost:8000")
+
+# Initialize Redis
 try:
     redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=0)
-    redis_tts_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=4)
+    redis_health_care = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=1)
+    redis_tts_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=REDIS_DB_TTS)
 except Exception as e:
     logger.error(f"Error connecting to Redis: {e}")
+    raise
 
-producer = RedisProducer()
-consumer = RedisConsumer()
+# Channel definitions
+HEALTH_CHECK_CHANNEL = "health_check"
+HEALTH_STATUS_CHANNEL = "health_status"
+SERVICE_NAME = os.getenv("SERVICE_NAME", "audio")
 
-
-def consume_queue(queue_name="audio_format_tasks"):
+def listen_for_health_checks():
     """
-    Consume tasks from the Redis queue and process them.
+    Listen for health check requests and respond with the service's health status.
     """
-    logger.info(f"Listening to queue: {queue_name}")
+    pubsub = redis_health_care.pubsub()
+    pubsub.subscribe(HEALTH_CHECK_CHANNEL)
+    logger.info(f"Subscribed to channel {HEALTH_CHECK_CHANNEL} for health checks.")
+
+    try:
+        for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    health_request = json.loads(message["data"])
+                    if health_request.get("action") == "health_check":
+                        # Publish service status
+                        health_status = {"service": SERVICE_NAME, "status": "healthy"}
+                        redis_health_care.publish(HEALTH_STATUS_CHANNEL, json.dumps(health_status))
+                        logger.info(f"Responded to health check: {health_status}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON in health check message: {message['data']} - {e}")
+                except Exception as e:
+                    logger.error(f"Error processing health check: {e}")
+    except KeyboardInterrupt:
+        logger.info("Shutting down health check listener.")
+    except Exception as e:
+        logger.error(f"Unexpected error in health check listener: {e}")
+
+def shutdown_handler(signum, frame):
+    """
+    Handle shutdown signals gracefully.
+    """
+    logger.info("Received shutdown signal. Exiting.")
+    exit(0)
+
+
+# Task Handlers
+def process_audio_task(task: Dict[str, Any]):
+    """Process an audio generation task."""
+    logger.info(f"Processing audio task: {task}")
+    if not validate_task(task):
+        logger.warning(f"Invalid task: {task}")
+        return
+
+    text = task["text"]
+    language = task["language"]
+    speaker_embedding = task["speaker_embedding"]
+    gpt_cond_latent = task["gpt_cond_latent"]
+
+    audio_base64 = send_tts_job(text, language, speaker_embedding, gpt_cond_latent)
+    if audio_base64:
+        logger.info(f"Audio generated for task {task['task_id']}")
+
+
+def process_speaker_task(task: Dict[str, Any]):
+    """Process a speaker-related task."""
+    logger.info(f"Processing speaker task: {task}")
+    if task.get("Type") == "clone_speaker":
+        process_clone_speaker_task(task)
+    else:
+        logger.warning(f"Unhandled speaker task type: {task.get('Type')}")
+
+
+def process_text_task(task: Dict[str, Any]):
+    """Process a text-related task."""
+    logger.info(f"Processing text task: {task}")
+    # Implement logic for text tasks as required
+
+
+def process_clone_speaker_task(task: Dict[str, Any]):
+    """Handle clone speaker tasks."""
+    try:
+        speaker_name = task["SpeakerName"]
+        audio_base64 = task["AudioFileBase64"]
+        audio_binary = base64.b64decode(audio_base64)
+
+        # Call API to clone speaker
+        files = {"wav_file": ("reference.wav", io.BytesIO(audio_binary))}
+        response = requests.post(f"{TTS_SERVER_API}/clone_speaker", files=files)
+        response.raise_for_status()
+
+        embeddings = response.json()
+        redis_key = f"cloned_speaker:{speaker_name}"
+        redis_client.set(redis_key, json.dumps(embeddings))
+        logger.info(f"Saved cloned speaker embeddings to Redis with key: {redis_key}")
+    except Exception as e:
+        logger.error(f"Error processing clone speaker task: {e}")
+
+
+# Unified Task Listener
+def listen_to_queues(redis_client, queues: List[str]):
+    """Listen to multiple Redis queues and process tasks."""
+    logger.info(f"Listening to queues: {queues}")
     while True:
         try:
-            # Blocking call to pop a task from the queue
-            _, task_json = redis_client.blpop(queue_name)
-            task = json.loads(task_json)
+            queue, task_data = redis_client.blpop(queues)
+            task = json.loads(task_data)
+            logger.info(f"Received task from {queue}: {task}")
 
-            # Validate task
-            if not validate_task(task):
-                logger.warning("Invalid task skipped.")
-                continue
-
-            logger.info(f"Processing task: {task}")
-
-            # Process the task
-            generate_audio_from_tuples(
-                tuples=split_text_into_tuples(task["Sections"]),
-                language=task["Language"],
-                studio_speaker=task["Speaker"],
-                speaker_type=task["SpeakerType"],
-                output_format=task["AudioFormat"],
-                book_title=task["Title"]
-            )
+            # Route task to appropriate handler
+            if queue == "audio_tasks":
+                process_audio_task(task)
+            elif queue == "speaker_tasks":
+                process_speaker_task(task)
+            elif queue == "text_tasks":
+                process_text_task(task)
+            else:
+                logger.warning(f"Unhandled queue: {queue}")
         except Exception as e:
-            logger.error(f"Error processing task: {e}")
+            logger.error(f"Error while processing task: {e}")
 
-def send_tts_job(text, language, speaker_embedding, gpt_cond_latent, queue_name="generate_audio"):
-    """
-    Send a TTS job to the MQ and wait for the result.
-    """
+
+# Utility Functions
+def send_tts_job(text: str, language: str, speaker_embedding: List[float], gpt_cond_latent: List[List[float]]) -> str:
+    """Send a TTS job and wait for the result."""
     task_id = str(uuid.uuid4())
     task = {
         "task_id": task_id,
@@ -83,94 +177,39 @@ def send_tts_job(text, language, speaker_embedding, gpt_cond_latent, queue_name=
         "gpt_cond_latent": gpt_cond_latent,
     }
 
-    # Push task to `audio_tasks` queue
-    producer.send_message(task, queue_name)
-    print(f"Task {task_id} sent to queue")
-
-    # Poll `audio_results` queue for the result
-    while True:
-        result = consumer.consume_message("audio_results")
-        if result and result["task_id"] == task_id:
-            print(f"Received result for task {task_id}")
-            return result["audio_base64"]
-        time.sleep(1)  # Avoid busy waiting
-
-
-def consume_clone_speaker_task(queue_name="clone_speaker_tasks"):
-    """
-    Consume clone speaker tasks from the specified Redis queue.
-
-    :param queue_name: Redis queue name to listen to for clone speaker tasks.
-    """
-    logger.info(f"Listening to '{queue_name}' queue...")
-    while True:
-        try:
-            # Blocking call to retrieve a task from the queue
-            _, task_json = redis_client.blpop(queue_name)
-            task = json.loads(task_json)
-
-            # Validate task
-            if task.get("Type") != "clone_speaker":
-                logger.warning(f"Invalid task type: {task.get('Type')}. Skipping.")
-                continue
-
-            # Decode the Base64-encoded audio file
-            speaker_name = task["SpeakerName"]
-            audio_base64 = task["AudioFileBase64"]
-            audio_binary = base64.b64decode(audio_base64)
-
-            # Process the clone speaker task
-            logger.info(f"Processing clone speaker task for '{speaker_name}'")
-            process_clone_speaker(audio_binary, speaker_name)
-
-        except Exception as e:
-            logger.error(f"Error processing clone speaker task: {e}")
-
-
-
-def process_clone_speaker(audio_binary, clone_speaker_name):
-    """
-    Clone a speaker using the raw audio binary and store the embeddings in Redis.
-
-    :param audio_binary: Raw audio data in binary format.
-    :param clone_speaker_name: Name of the cloned speaker.
-    """
     try:
-        # Send the binary audio file to the cloning API
-        files = {"wav_file": ("reference.wav", io.BytesIO(audio_binary))}
-        response = requests.post(TTS_SERVER_API + "/clone_speaker", files=files)
-        response.raise_for_status()
+        redis_client.rpush("audio_tasks", json.dumps(task))
+        logger.info(f"Task {task_id} added to audio_tasks queue.")
 
-        # Get the embeddings from the API response
-        embeddings = response.json()
-
-        # Save embeddings to Redis
-        redis_key = f"cloned_speaker:{clone_speaker_name}"
-        redis_client.set(redis_key, json.dumps(embeddings))  # Store as JSON string
-        logger.info(f"Saved cloned speaker embeddings to Redis with key: {redis_key}")
-
+        # Poll for result
+        while True:
+            _, result_data = redis_client.blpop(RESULT_QUEUE)
+            result = json.loads(result_data)
+            if result["task_id"] == task_id:
+                logger.info(f"Received result for task {task_id}")
+                return result["audio_base64"]
+            time.sleep(0.5)
     except Exception as e:
-        logger.error(f"Error cloning speaker '{clone_speaker_name}': {e}")
+        logger.error(f"Error in send_tts_job: {e}")
+        return ""
 
 
 def fetch_languages_and_speakers():
-    """
-    Fetch languages and speakers data from Redis.
-    """
+    """Fetch languages and speakers from Redis."""
     try:
-        # Fetch languages and speakers from Redis
-        languages = redis_tts_client.get("data:tts:languages")
-        studio_speakers = redis_tts_client.get("xtts_model:tts:studio_speakers")
-        cloned_speakers = redis_tts_client.get("data:tts:cloned_speakers")
+        languages = redis_tts_client.get("data:xtts:languages")
+        studio_speakers = redis_tts_client.get("data:xtts:studio_speakers")
+        cloned_speakers = redis_tts_client.get("data:xtts:cloned_speakers")
 
-        # Parse the JSON data if present
-        languages = json.loads(languages) if languages else []  # Expecting a list
-        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}  # Expecting a dictionary
-        cloned_speakers = json.loads(cloned_speakers) if cloned_speakers else {}  # Expecting a dictionary
-        return languages, studio_speakers, cloned_speakers
+        return (
+            json.loads(languages) if languages else [],
+            json.loads(studio_speakers) if studio_speakers else {},
+            json.loads(cloned_speakers) if cloned_speakers else {},
+        )
     except Exception as e:
-        logger.error(f"Error fetching languages and speakers from Redis: {e}")
-        return [], {}, {}  # Return empty list and dictionary as fallback
+        logger.error(f"Error fetching languages and speakers: {e}")
+        return [], {}, {}
+
 
 
 
@@ -275,15 +314,6 @@ def generate_audio_from_tuples(
             logger.error(f"Error generating audio for section '{section_name}' (Index: {section_index}): {e}")
 
 
-def clear_cache(keys):
-    """
-    Delete cached keys from Redis.
-    """
-    for key in keys:
-        redis_client.delete(key)
-    logger.info(f"Deleted {len(keys)} cache keys from Redis.")
-
-
 
 def generate_audio(book_title, selected_title, sections, language="en", studio_speaker="Asya Anara", speaker_type="Studio", output_format="wav"):
     """
@@ -338,29 +368,6 @@ def generate_audio(book_title, selected_title, sections, language="en", studio_s
         return None
 
 
-def clone_speaker(upload_file, clone_speaker_name):
-    """
-    Clone a speaker and store the embeddings in Redis instead of writing to a file.
-
-    :param upload_file: Path to the uploaded audio file for cloning.
-    :param clone_speaker_name: Name of the cloned speaker.
-    """
-    try:
-        # Upload the file for speaker cloning
-        files = {"wav_file": ("reference.wav", open(upload_file, "rb"))}
-        response = requests.post(TTS_SERVER_API + "/clone_speaker", files=files)
-        response.raise_for_status()
-
-        # Get the embeddings from the API response
-        embeddings = response.json()
-
-        # Save embeddings to Redis
-        redis_key = f"cloned_speaker:{clone_speaker_name}"
-        redis_client.set(redis_key, json.dumps(embeddings))  # Store as JSON string
-        logger.info(f"Saved cloned speaker embeddings to Redis with key: {redis_key}")
-
-    except Exception as e:
-        logger.error(f"Error cloning speaker '{clone_speaker_name}': {e}")
 
 
 
@@ -565,6 +572,29 @@ def split_text_into_chunks(text, max_chars=250, max_tokens=350):
     return chunks
 
 
+def clone_speaker(upload_file, clone_speaker_name):
+    """
+    Clone a speaker and store the embeddings in Redis instead of writing to a file.
+
+    :param upload_file: Path to the uploaded audio file for cloning.
+    :param clone_speaker_name: Name of the cloned speaker.
+    """
+    try:
+        # Upload the file for speaker cloning
+        files = {"wav_file": ("reference.wav", open(upload_file, "rb"))}
+        response = requests.post(TTS_SERVER_API + "/clone_speaker", files=files)
+        response.raise_for_status()
+
+        # Get the embeddings from the API response
+        embeddings = response.json()
+
+        # Save embeddings to Redis
+        redis_key = f"cloned_speaker:{clone_speaker_name}"
+        redis_client.set(redis_key, json.dumps(embeddings))  # Store as JSON string
+        logger.info(f"Saved cloned speaker embeddings to Redis with key: {redis_key}")
+
+    except Exception as e:
+        logger.error(f"Error cloning speaker '{clone_speaker_name}': {e}")
 
 
 def clean_filename(filename):
@@ -573,8 +603,26 @@ def clean_filename(filename):
     """
     return re.sub(r'[<>:"/\\|?*]', '_', filename).strip()
 
-
-
 if __name__ == "__main__":
-    consume_queue("audio_tasks")
-    languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
+    logger.info("Starting TTS task processor.")
+
+    # Signal handling for graceful shutdown
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
+    try:
+        # Fetch languages and speakers
+        languages, studio_speakers, cloned_speakers = fetch_languages_and_speakers()
+
+        # Start health check listener in a separate thread
+        health_check_thread = threading.Thread(target=listen_for_health_checks, daemon=True)
+        health_check_thread.start()
+
+        # Start listening to task queues
+        listen_to_queues(redis_tts_client, TASK_QUEUES)
+
+    except Exception as e:
+        logger.error(f"Unexpected error in TTS task processor: {e}")
+
+    finally:
+        logger.info("TTS task processor stopped.")

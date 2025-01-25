@@ -7,7 +7,6 @@ import redis
 import base64
 from mq.producer import RedisProducer
 from mq.consumer import RedisConsumer
-from health_service import check_service_health
 from text_service import extract_text_from_file, present_text_to_ui, aggregate_section_content
 
 # Logging configuration
@@ -19,118 +18,142 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Redis setup
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+
 try:
     redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=0)
+    redis_health_care = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=1)
     redis_tts_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=4)
 except Exception as e:
     logger.error(f"Error connecting to Redis: {e}")
+    raise
 
 producer = RedisProducer()
 consumer = RedisConsumer()
 
 
-def create_task_and_enqueue(book_title, selected_title, sections, language, speaker, speaker_type, output_format):
+def fetch_languages_and_speakers():
+    """Fetch languages and speakers from Redis."""
+    try:
+        languages = redis_tts_client.get("data:xtts:languages")
+        studio_speakers = redis_tts_client.get("data:xtts:speakers")
+        cloned_speakers = redis_tts_client.get("data:xtts:cloned_speakers")
+
+        return (
+            json.loads(languages) if languages else [],
+            json.loads(studio_speakers) if studio_speakers else {},
+            json.loads(cloned_speakers) if cloned_speakers else {},
+        )
+    except Exception as e:
+        logger.error(f"Error fetching languages and speakers: {e}")
+        return [], {}, {}
+
+# Channel definitions
+HEALTH_CHECK_CHANNEL = "health_check"
+HEALTH_STATUS_CHANNEL = "health_status"
+SERVICE_NAME = os.getenv("SERVICE_NAME", "frontend")
+
+def listen_for_health_checks():
     """
-    Create a task for the selected section and enqueue it in Redis.
-
-    :param book_title: The title of the book.
-    :param selected_title: The selected section title.
-    :param sections: All sections of the book.
-    :param language: The language of the audio.
-    :param speaker: The name of the speaker.
-    :param speaker_type: The type of the speaker (e.g., "Studio", "Cloned").
-    :param output_format: The format of the generated audio.
+    Listen for health check requests and respond with the service's health status.
     """
-    # Filter the selected section(s)
-    selected_sections = get_selected_content(selected_title, sections)
+    pubsub = redis_health_care.pubsub()
+    pubsub.subscribe(HEALTH_CHECK_CHANNEL)
+    logger.info(f"Subscribed to channel {HEALTH_CHECK_CHANNEL} for health checks.")
 
-    if not selected_sections:
-        logger.warning(f"No matching section found for '{selected_title}'. Task not created.")
-        return
+    try:
+        for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    health_request = json.loads(message["data"])
+                    if health_request.get("action") == "health_check":
+                        # Publish service status
+                        health_status = {"service": SERVICE_NAME, "status": "healthy"}
+                        redis_health_care.publish(HEALTH_STATUS_CHANNEL, json.dumps(health_status))
+                        logger.info(f"Responded to health check: {health_status}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON in health check message: {message['data']} - {e}")
+                except Exception as e:
+                    logger.error(f"Error processing health check: {e}")
+    except KeyboardInterrupt:
+        logger.info("Shutting down health check listener.")
+    except Exception as e:
+        logger.error(f"Unexpected error in health check listener: {e}")
 
-    # Create the task
+def shutdown_handler(signum, frame):
+    """
+    Handle shutdown signals gracefully.
+    """
+    logger.info("Received shutdown signal. Exiting.")
+    exit(0)
+
+
+def enqueue_task(task, queue_name):
+    """Enqueue a task in Redis."""
+    try:
+        redis_client.rpush(queue_name, json.dumps(task))
+        logger.info(f"Task enqueued in {queue_name}: {task['ID']}")
+    except Exception as e:
+        logger.error(f"Error enqueuing task in {queue_name}: {e}")
+
+
+
+def create_audio_task(book_title, selected_title, sections, language, speaker, speaker_type, output_format):
+    """Create and enqueue an audio generation task."""
+    task_id = f"{book_title}-{int(time.time())}"
     task = {
         "Title": book_title,
-        "Sections": selected_sections,  # Include only the selected sections
+        "selected_title": selected_title,
+        "Sections": sections,
         "Language": language,
         "Speaker": speaker,
         "SpeakerType": speaker_type,
         "AudioFormat": output_format,
-        "ID": f"{book_title}-{int(time.time())}",
+        "ID": task_id,
         "Status": "pending",
         "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "Priority": "normal"
     }
+    enqueue_task(task, "audio_format_tasks")
 
-    # Enqueue the task
-    redis_client.rpush("audio_format_tasks", json.dumps(task))
-    logger.info(f"Enqueued task for '{selected_title}' from book '{book_title}'")
-
-
-
-def enqueue_clone_speaker_task(file_path, speaker_name, queue_name="clone_speaker_tasks"):
-    """
-    Enqueue a task to clone a speaker with the audio file encoded in Base64.
-
-    :param file_path: Path to the audio file for cloning.
-    :param speaker_name: Name of the cloned speaker.
-    :param queue_name: Redis queue name for the clone speaker task.
-    """
+def create_clone_speaker_task(file_path, speaker_name):
+    """Create and enqueue a speaker cloning task."""
     try:
-        # Read the audio file and encode it to Base64
         with open(file_path, "rb") as audio_file:
             encoded_audio = base64.b64encode(audio_file.read()).decode("utf-8")
-
-        # Create the task payload
-        task = {
-            "Type": "clone_speaker",
-            "AudioFileBase64": encoded_audio,
-            "SpeakerName": speaker_name
-        }
-
-        # Enqueue the task
-        redis_client.rpush(queue_name, json.dumps(task))
-        logger.info(f"Enqueued clone speaker task for '{speaker_name}' in queue '{queue_name}'")
-
+        task = {"Type": "clone_speaker", "AudioFileBase64": encoded_audio, "SpeakerName": speaker_name}
+        enqueue_task(task, "clone_speaker_tasks")
     except Exception as e:
-        logger.error(f"Error enqueuing clone speaker task: {e}")
+        logger.error(f"Error creating clone speaker task: {e}")
 
 
+def process_file(file):
+    """Process an uploaded file and prepare its content for the UI."""
+    if not file:
+        return "No file uploaded.", gr.update(choices=[]), None, "", ""
 
-def fetch_languages_and_speakers():
-    """
-    Fetch languages and speakers data from Redis.
-    """
     try:
-        # Fetch languages and speakers from Redis
-        languages = redis_tts_client.get("data:tts:languages")
-        studio_speakers = redis_tts_client.get("data:tts:studio_speakers")
-        cloned_speakers = redis_tts_client.get("data:tts:cloned_speakers")
+        raw_result, file_name = extract_text_from_file(file.name)
+        title, section_titles, formatted_content = present_text_to_ui(raw_result, file_name)
 
-        # Parse the JSON data if present
-        languages = json.loads(languages) if languages else []  # Expecting a list
-        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}  # Expecting a dictionary
-        cloned_speakers = json.loads(cloned_speakers) if cloned_speakers else {}  # Expecting a dictionary
-        return languages, studio_speakers, cloned_speakers
+        full_book_content = aggregate_section_content(title, raw_result.get("Sections", []))
+        return title, gr.update(choices=section_titles), formatted_content, full_book_content
     except Exception as e:
-        logger.error(f"Error fetching languages and speakers from Redis: {e}")
-        return [], {}, {}  # Return empty list and dictionary as fallback
+        logger.error(f"Error processing file: {e}")
+        return "Error processing file.", gr.update(choices=[]), None, "", ""
 
-
-def update_connection_status():
-    """
-    Check the status of connected services and update the connection status in the UI.
-    """
+def update_speakers(speaker_type, current_selection=None):
+    """Update speaker dropdown based on the selected type."""
     try:
-        # Call the health service to check the status of all services
-        status = check_service_health()
-        # Format the status for display
-        return "\n".join([f"{name}: {info['status']}" for name, info in status.items()])
+        speakers = STUDIO_SPEAKERS if speaker_type == "Studio" else CLONED_SPEAKERS
+        speakers = list(speakers.keys())
+        default = speakers[0] if current_selection not in speakers else current_selection
+        return gr.update(choices=speakers, value=default)
     except Exception as e:
-        logger.error(f"Error updating connection status: {e}")
-        return "Error checking service status."
+        logger.error(f"Error updating speakers: {e}")
+        return gr.update(choices=[], value=None)
 
 
 def update_section_content(book_title, selected_title, sections_state):
@@ -210,89 +233,89 @@ def aggregate_section_with_subsections(section, depth=1):
     return aggregated_content
 
 
-def process_file(file):
-    """
-    Process the uploaded file and display formatted content, including pre-aggregated text for the book title.
-    """
-    if not file:
-        return "No file uploaded.", gr.update(choices=[]), None, "", ""
+# def process_file(file):
+#     """
+#     Process the uploaded file and display formatted content, including pre-aggregated text for the book title.
+#     """
+#     if not file:
+#         return "No file uploaded.", gr.update(choices=[]), None, "", ""
+#
+#     try:
+#         raw_result, file_name = extract_text_from_file(file.name)
+#         formatted_json_output = json.dumps(raw_result, indent=4, ensure_ascii=False)
+#         logger.debug(f"Raw extraction result: {raw_result}")
+#
+#         # Extract title and sections
+#         title, section_titles, formatted_content = present_text_to_ui(raw_result, file_name)
+#
+#         # Aggregate content for the entire book
+#         sections = raw_result.get("Sections", [])
+#         full_book_content = aggregate_section_content(title, sections, include_subsections=True)
+#
+#         # Add all sections and subsections to the dropdown
+#         def add_titles(section, titles):
+#             titles.append(section.get("Heading", ""))
+#             for subsection in section.get("Subsections", []):
+#                 add_titles(subsection, titles)
+#
+#         section_titles = []
+#         for section in sections:
+#             add_titles(section, section_titles)
+#
+#         # Ensure the book title is included as a choice
+#         if title not in section_titles:
+#             section_titles.insert(0, title)
+#
+#         # Update dropdown and state
+#         if not sections:
+#             return title, gr.update(choices=[]), [], "No sections found.", ""
+#
+#         logger.info(f"File processed successfully: {file.name}")
+#         return (
+#             title,
+#             gr.update(choices=section_titles),
+#             {"Sections": sections, "FullBookContent": full_book_content},
+#             formatted_content,
+#             formatted_json_output
+#         )
+#
+#     except Exception as e:
+#         logger.error(f"Error processing file: {e}")
+#         return "Error processing file.", gr.update(choices=[]), None, "", ""
 
-    try:
-        raw_result, file_name = extract_text_from_file(file.name)
-        formatted_json_output = json.dumps(raw_result, indent=4, ensure_ascii=False)
-        logger.debug(f"Raw extraction result: {raw_result}")
 
-        # Extract title and sections
-        title, section_titles, formatted_content = present_text_to_ui(raw_result, file_name)
-
-        # Aggregate content for the entire book
-        sections = raw_result.get("Sections", [])
-        full_book_content = aggregate_section_content(title, sections, include_subsections=True)
-
-        # Add all sections and subsections to the dropdown
-        def add_titles(section, titles):
-            titles.append(section.get("Heading", ""))
-            for subsection in section.get("Subsections", []):
-                add_titles(subsection, titles)
-
-        section_titles = []
-        for section in sections:
-            add_titles(section, section_titles)
-
-        # Ensure the book title is included as a choice
-        if title not in section_titles:
-            section_titles.insert(0, title)
-
-        # Update dropdown and state
-        if not sections:
-            return title, gr.update(choices=[]), [], "No sections found.", ""
-
-        logger.info(f"File processed successfully: {file.name}")
-        return (
-            title,
-            gr.update(choices=section_titles),
-            {"Sections": sections, "FullBookContent": full_book_content},
-            formatted_content,
-            formatted_json_output
-        )
-
-    except Exception as e:
-        logger.error(f"Error processing file: {e}")
-        return "Error processing file.", gr.update(choices=[]), None, "", ""
-
-
-def update_speakers(speaker_type, current_selection=None):
-    """
-    Dynamically update the speaker dropdown based on the speaker type.
-    Automatically select a default speaker if none is currently selected or if the current selection is invalid.
-    """
-    try:
-        # Determine the list of speakers based on the selected type
-        if speaker_type == "Studio":
-            speakers = list(studio_speakers.keys())
-        elif speaker_type == "Cloned":
-            speakers = list(cloned_speakers.keys())
-        else:
-            speakers = []
-
-        if not speakers:
-            logger.warning(f"No speakers found for type: {speaker_type}")
-            return gr.update(choices=[], value=None)
-
-        # Choose a default speaker
-        if current_selection not in speakers:
-            default_speaker = "Asya Anara" if "Asya Anara" in speakers else speakers[0]
-        else:
-            default_speaker = current_selection
-
-        logger.info(f"Speaker dropdown updated for type: {speaker_type} with speakers: {speakers}. Default: {default_speaker}")
-
-        # Update the dropdown with the speaker list and set the default
-        return gr.update(choices=speakers, value=default_speaker)
-
-    except Exception as e:
-        logger.error(f"Error updating speakers: {e}")
-        return gr.update(choices=[], value=None)
+# def update_speakers(speaker_type, current_selection=None):
+#     """
+#     Dynamically update the speaker dropdown based on the speaker type.
+#     Automatically select a default speaker if none is currently selected or if the current selection is invalid.
+#     """
+#     try:
+#         # Determine the list of speakers based on the selected type
+#         if speaker_type == "Studio":
+#             speakers = list(STUDIO_SPEAKERS.keys())
+#         elif speaker_type == "Cloned":
+#             speakers = list(CLONED_SPEAKERS.keys())
+#         else:
+#             speakers = []
+#
+#         if not speakers:
+#             logger.warning(f"No speakers found for type: {speaker_type}")
+#             return gr.update(choices=[], value=None)
+#
+#         # Choose a default speaker
+#         if current_selection not in speakers:
+#             default_speaker = "Asya Anara" if "Asya Anara" in speakers else speakers[0]
+#         else:
+#             default_speaker = current_selection
+#
+#         logger.info(f"Speaker dropdown updated for type: {speaker_type} with speakers: {speakers}. Default: {default_speaker}")
+#
+#         # Update the dropdown with the speaker list and set the default
+#         return gr.update(choices=speakers, value=default_speaker)
+#
+#     except Exception as e:
+#         logger.error(f"Error updating speakers: {e}")
+#         return gr.update(choices=[], value=None)
 
 
 def text_to_speech(book_title, selected_title, sections_state, language, speaker_name, speaker_type, output_format):
@@ -306,7 +329,7 @@ def text_to_speech(book_title, selected_title, sections_state, language, speaker
     sections = sections_state.get("Sections", [])
 
     # Enqueue the task
-    create_task_and_enqueue(
+    create_audio_task(
         book_title=book_title,
         selected_title=selected_title,
         sections=sections,
@@ -459,22 +482,50 @@ def update_audio_metadata(book_title, sections):
     logger.info(f"Updated audio metadata for book '{book_title}'")
 
 
+def fetch_status_from_redis(task_id):
+    """
+    Fetch the status of a task from Redis.
+    """
+    try:
+        status = redis_client.get(f"status:{task_id}")
+        logger.info(f"Task {task_id} status: {status}")
+        return status
+    except Exception as e:
+        logger.error(f"Error fetching status for task {task_id}: {e}")
+        return "unknown"
+
+
+
+def update_status(task_id):
+    status = fetch_status_from_redis(task_id)
+    if status == "completed":
+        return status, True
+    return status, False
+
+
+
 get_books()
 
-languages, studio_speakers,cloned_speakers = fetch_languages_and_speakers()
+# Fetch initial data
+LANGUAGES, STUDIO_SPEAKERS, CLONED_SPEAKERS = fetch_languages_and_speakers()
+listen_for_health_checks()
+
 # Gradio UI
 with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
     connection_status = gr.Textbox(label="Service Status", value="Checking...", interactive=False)
-    gr.Timer(value=20).tick(update_connection_status, inputs=[], outputs=[connection_status])
+    # gr.Timer(value=20).tick(he, inputs=[], outputs=[connection_status])
+    gr.Timer(value=10).tick(listen_for_health_checks, inputs=[], outputs=[connection_status])
 
     with gr.Tab("TTS"):
         with gr.Row():
             file_input = gr.File(label="Upload File")
-            speaker_type = gr.Radio(label="Speaker Type", choices=["Studio", "Cloned"], value="Studio")
-            studio_dropdown = gr.Dropdown(label="Speaker", choices=[], value=None)
-            lang_dropdown = gr.Dropdown(label="Language", choices=languages, value="en" if "en" in languages else None)
-            output_format_dropdown = gr.Dropdown( label="Output Format",choices=["wav", "mp3"],value="wav",interactive=True)  # New dropdown for format selection
+            speaker_type = gr.Radio(label="Speaker Type", choices=["Studio"], value="Studio")
+
+            # Initialize dropdowns with empty choices; these will be updated dynamically
+            studio_dropdown = gr.Dropdown(label="Speaker", choices=list(STUDIO_SPEAKERS.keys()), value="Claribel Dervla" if "Claribel Dervla" in STUDIO_SPEAKERS else None)
+            lang_dropdown = gr.Dropdown(label="Language", choices=LANGUAGES, value="en" if "en" in LANGUAGES else None)
+            output_format_dropdown = gr.Dropdown(label="Output Format", choices=["wav", "mp3"], value="wav")
 
         with gr.Row():
             with gr.Column():
@@ -501,7 +552,7 @@ with gr.Blocks() as Book2Audio:
         upload_file = gr.Audio(label="Upload Reference Audio", type="filepath")
         clone_speaker_name = gr.Textbox(label="Speaker Name", value="default_speaker")
         clone_button = gr.Button("Clone Speaker")
-        cloned_speaker_dropdown = gr.Dropdown(label="Cloned Speaker", choices=list(cloned_speakers.keys()), value=None)
+        cloned_speaker_dropdown = gr.Dropdown(label="Cloned Speaker", choices=list(CLONED_SPEAKERS.keys()), value=None)
 
     # Update sections dropdown dynamically based on selected book
     book_dropdown.change(
@@ -552,9 +603,10 @@ with gr.Blocks() as Book2Audio:
     )
 
     clone_button.click(
-        enqueue_clone_speaker_task,
+        create_clone_speaker_task,
         inputs=[upload_file, clone_speaker_name],
         outputs=[]
     )
+
 
     Book2Audio.launch(share=False, debug=False, server_port=3009, server_name="0.0.0.0")
