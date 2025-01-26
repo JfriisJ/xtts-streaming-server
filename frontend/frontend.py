@@ -1,10 +1,13 @@
-import json
-import logging
 import time
 import os
+import uuid
+
 import gradio as gr
 import redis
 import base64
+from jsonschema import validate, ValidationError
+import json
+import logging
 from mq.producer import RedisProducer
 from mq.consumer import RedisConsumer
 from text_service import extract_text_from_file, present_text_to_ui, aggregate_section_content
@@ -23,7 +26,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 try:
-    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=0)
+    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=2)
     redis_health_care = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=1)
     redis_tts_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False, db=4)
 except Exception as e:
@@ -50,73 +53,143 @@ def fetch_languages_and_speakers():
         logger.error(f"Error fetching languages and speakers: {e}")
         return [], {}, {}
 
-# Channel definitions
-HEALTH_CHECK_CHANNEL = "health_check"
-HEALTH_STATUS_CHANNEL = "health_status"
-SERVICE_NAME = os.getenv("SERVICE_NAME", "frontend")
-
-def listen_for_health_checks():
-    """
-    Listen for health check requests and respond with the service's health status.
-    """
-    pubsub = redis_health_care.pubsub()
-    pubsub.subscribe(HEALTH_CHECK_CHANNEL)
-    logger.info(f"Subscribed to channel {HEALTH_CHECK_CHANNEL} for health checks.")
-
-    try:
-        for message in pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    health_request = json.loads(message["data"])
-                    if health_request.get("action") == "health_check":
-                        # Publish service status
-                        health_status = {"service": SERVICE_NAME, "status": "healthy"}
-                        redis_health_care.publish(HEALTH_STATUS_CHANNEL, json.dumps(health_status))
-                        logger.info(f"Responded to health check: {health_status}")
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON in health check message: {message['data']} - {e}")
-                except Exception as e:
-                    logger.error(f"Error processing health check: {e}")
-    except KeyboardInterrupt:
-        logger.info("Shutting down health check listener.")
-    except Exception as e:
-        logger.error(f"Unexpected error in health check listener: {e}")
-
-def shutdown_handler(signum, frame):
-    """
-    Handle shutdown signals gracefully.
-    """
-    logger.info("Received shutdown signal. Exiting.")
-    exit(0)
+# # Channel definitions
+# HEALTH_CHECK_CHANNEL = "health_check"
+# HEALTH_STATUS_CHANNEL = "health_status"
+# SERVICE_NAME = os.getenv("SERVICE_NAME", "frontend")
+#
+# def listen_for_health_checks():
+#     """
+#     Listen for health check requests and respond with the service's health status.
+#     """
+#     pubsub = redis_health_care.pubsub()
+#     pubsub.subscribe(HEALTH_CHECK_CHANNEL)
+#     logger.info(f"Subscribed to channel {HEALTH_CHECK_CHANNEL} for health checks.")
+#
+#     try:
+#         for message in pubsub.listen():
+#             if message["type"] == "message":
+#                 try:
+#                     health_request = json.loads(message["data"])
+#                     if health_request.get("action") == "health_check":
+#                         # Publish service status
+#                         health_status = {"service": SERVICE_NAME, "status": "healthy"}
+#                         redis_health_care.publish(HEALTH_STATUS_CHANNEL, json.dumps(health_status))
+#                         logger.info(f"Responded to health check: {health_status}")
+#                 except json.JSONDecodeError as e:
+#                     logger.error(f"Invalid JSON in health check message: {message['data']} - {e}")
+#                 except Exception as e:
+#                     logger.error(f"Error processing health check: {e}")
+#     except KeyboardInterrupt:
+#         logger.info("Shutting down health check listener.")
+#     except Exception as e:
+#         logger.error(f"Unexpected error in health check listener: {e}")
+#
+# def shutdown_handler(signum, frame):
+#     """
+#     Handle shutdown signals gracefully.
+#     """
+#     logger.info("Received shutdown signal. Exiting.")
+#     exit(0)
 
 
 def enqueue_task(task, queue_name):
     """Enqueue a task in Redis."""
     try:
         redis_client.rpush(queue_name, json.dumps(task))
-        logger.info(f"Task enqueued in {queue_name}: {task['ID']}")
+        logger.info(f"Task enqueued in {queue_name}: {task['job_id']}")
     except Exception as e:
         logger.error(f"Error enqueuing task in {queue_name}: {e}")
 
+def validate_task_with_schema(task, schema_path):
+    """
+    Validate a task using a JSON schema.
+
+    :param task: The task dictionary to validate.
+    :param schema_path: Path to the JSON schema file.
+    :return: True if valid, False otherwise.
+    """
+    try:
+        with open(schema_path, "r") as schema_file:
+            schema = json.load(schema_file)
+        validate(instance=task, schema=schema)
+        return True
+    except ValidationError as e:
+        logger.error(f"Task validation failed: {e.message}")
+        return False
+    except json.JSONDecodeError as e:
+        logger.error(f"Error loading schema: {e}")
+        return False
+
+# def create_audio_task(book_title, selected_title, sections, language, speaker, speaker_type, output_format):
+#     """Create and enqueue an audio generation task."""
+#     job_id = f"{book_title}-{int(time.time())}"
+#     task = {
+#         "job_id": job_id,
+#         "sections": sections,
+#         "language": language,
+#         "book_title": book_title,
+#         "selected_title": selected_title,
+#
+#
+#         "speaker": speaker,
+#         "speaker_type": speaker_type,
+#         "output_format": output_format,
+#
+#         "task_type": "tts_generate",
+#         "status": "pending",
+#         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+#         "priority": "normal"
+#     }
+#     enqueue_task(task, "audio_tasks")
 
 
-def create_audio_task(book_title, selected_title, sections, language, speaker, speaker_type, output_format):
-    """Create and enqueue an audio generation task."""
-    task_id = f"{book_title}-{int(time.time())}"
+
+def create_audio_task(book_title, selected_title, sections, language, speaker, speaker_type, output_format ):
+    """
+    Create and enqueue an audio generation task.
+    :param task_id : Unique identifier for the task.
+    :param job_id : Unique identifier for the job.
+    :param book_title: Title of the book.
+    :param selected_title: Title of the selected section.
+    :param sections: List of sections and content.
+    :param language: Language of the content.
+    :param speaker: Speaker identifier.
+    :param speaker_type: Type of speaker (e.g., Studio).
+    :param output_format: Desired audio format.
+    :param status: Status of the task.
+    :param timestamp: Timestamp of the task creation.
+    :param priority: Priority level of the task.
+    """
+    # Generate a unique job ID
+    job_id = f"{book_title}-{int(time.time())}"
+    schema_path = "mq/schema/tts_generate.json"
+
+    # Prepare the task
     task = {
-        "Title": book_title,
+        "task_id": str(uuid.uuid4()),
+        "job_id": job_id,
+        "book_title": book_title,
         "selected_title": selected_title,
-        "Sections": sections,
-        "Language": language,
-        "Speaker": speaker,
-        "SpeakerType": speaker_type,
-        "AudioFormat": output_format,
-        "ID": task_id,
-        "Status": "pending",
-        "Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "Priority": "normal"
+        "sections": sections,
+        "language": language,
+        "speaker": speaker,
+        "speaker_type": speaker_type,
+        "output_format": output_format,
+        "status": "pending",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "priority": "normal",
     }
-    enqueue_task(task, "audio_format_tasks")
+
+    # Validate the task
+    if not validate_task_with_schema(task, schema_path):
+        logger.error("Task validation failed. Task not enqueued.")
+        return
+
+    # Enqueue the task
+    enqueue_task(task, "audio_tasks")
+    logger.info(f"Task {task['task_id']} added to the queue successfully.")
+
 
 def create_clone_speaker_task(file_path, speaker_name):
     """Create and enqueue a speaker cloning task."""
@@ -139,7 +212,7 @@ def process_file(file):
         title, section_titles, formatted_content = present_text_to_ui(raw_result, file_name)
 
         full_book_content = aggregate_section_content(title, raw_result.get("Sections", []))
-        return title, gr.update(choices=section_titles), formatted_content, full_book_content
+        return title, gr.update(choices=section_titles), formatted_content, full_book_content, json.dumps(raw_result, indent=4, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error processing file: {e}")
         return "Error processing file.", gr.update(choices=[]), None, "", ""
@@ -233,55 +306,55 @@ def aggregate_section_with_subsections(section, depth=1):
     return aggregated_content
 
 
-# def process_file(file):
-#     """
-#     Process the uploaded file and display formatted content, including pre-aggregated text for the book title.
-#     """
-#     if not file:
-#         return "No file uploaded.", gr.update(choices=[]), None, "", ""
-#
-#     try:
-#         raw_result, file_name = extract_text_from_file(file.name)
-#         formatted_json_output = json.dumps(raw_result, indent=4, ensure_ascii=False)
-#         logger.debug(f"Raw extraction result: {raw_result}")
-#
-#         # Extract title and sections
-#         title, section_titles, formatted_content = present_text_to_ui(raw_result, file_name)
-#
-#         # Aggregate content for the entire book
-#         sections = raw_result.get("Sections", [])
-#         full_book_content = aggregate_section_content(title, sections, include_subsections=True)
-#
-#         # Add all sections and subsections to the dropdown
-#         def add_titles(section, titles):
-#             titles.append(section.get("Heading", ""))
-#             for subsection in section.get("Subsections", []):
-#                 add_titles(subsection, titles)
-#
-#         section_titles = []
-#         for section in sections:
-#             add_titles(section, section_titles)
-#
-#         # Ensure the book title is included as a choice
-#         if title not in section_titles:
-#             section_titles.insert(0, title)
-#
-#         # Update dropdown and state
-#         if not sections:
-#             return title, gr.update(choices=[]), [], "No sections found.", ""
-#
-#         logger.info(f"File processed successfully: {file.name}")
-#         return (
-#             title,
-#             gr.update(choices=section_titles),
-#             {"Sections": sections, "FullBookContent": full_book_content},
-#             formatted_content,
-#             formatted_json_output
-#         )
-#
-#     except Exception as e:
-#         logger.error(f"Error processing file: {e}")
-#         return "Error processing file.", gr.update(choices=[]), None, "", ""
+def process_file(file):
+    """
+    Process the uploaded file and display formatted content, including pre-aggregated text for the book title.
+    """
+    if not file:
+        return "No file uploaded.", gr.update(choices=[]), None, "", ""
+
+    try:
+        raw_result, file_name = extract_text_from_file(file.name)
+        formatted_json_output = json.dumps(raw_result, indent=4, ensure_ascii=False)
+        logger.debug(f"Raw extraction result: {raw_result}")
+
+        # Extract title and sections
+        title, section_titles, formatted_content = present_text_to_ui(raw_result, file_name)
+
+        # Aggregate content for the entire book
+        sections = raw_result.get("Sections", [])
+        full_book_content = aggregate_section_content(title, sections, include_subsections=True)
+
+        # Add all sections and subsections to the dropdown
+        def add_titles(section, titles):
+            titles.append(section.get("Heading", ""))
+            for subsection in section.get("Subsections", []):
+                add_titles(subsection, titles)
+
+        section_titles = []
+        for section in sections:
+            add_titles(section, section_titles)
+
+        # Ensure the book title is included as a choice
+        if title not in section_titles:
+            section_titles.insert(0, title)
+
+        # Update dropdown and state
+        if not sections:
+            return title, gr.update(choices=[]), [], "No sections found.", ""
+
+        logger.info(f"File processed successfully: {file.name}")
+        return (
+            title,
+            gr.update(choices=section_titles),
+            {"Sections": sections, "FullBookContent": full_book_content},
+            formatted_content,
+            formatted_json_output
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing file: {e}")
+        return "Error processing file.", gr.update(choices=[]), None, "", ""
 
 
 # def update_speakers(speaker_type, current_selection=None):
@@ -508,14 +581,14 @@ get_books()
 
 # Fetch initial data
 LANGUAGES, STUDIO_SPEAKERS, CLONED_SPEAKERS = fetch_languages_and_speakers()
-listen_for_health_checks()
+# listen_for_health_checks()
 
 # Gradio UI
 with gr.Blocks() as Book2Audio:
     sections_state = gr.State([])
     connection_status = gr.Textbox(label="Service Status", value="Checking...", interactive=False)
     # gr.Timer(value=20).tick(he, inputs=[], outputs=[connection_status])
-    gr.Timer(value=10).tick(listen_for_health_checks, inputs=[], outputs=[connection_status])
+    # gr.Timer(value=10).tick(listen_for_health_checks, inputs=[], outputs=[connection_status])
 
     with gr.Tab("TTS"):
         with gr.Row():

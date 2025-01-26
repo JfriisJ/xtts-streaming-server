@@ -1,19 +1,35 @@
-audio_service/
+project_root/
+│   config.py
+│   main.py
+│   structure.md
+│   
+├───core
+│      consumer.py
+│      mq.py
+│      producer.py
+│      task_handlers.py
+│      __init__.py
 │
-├── main.py                      # Main entry point
-├── config.py                    # Configuration settings
-├── health.py                    # Health check logic
-├── redis_utils.py               # Redis utilities
-├── task_listener.py             # Task queue listeners
+├───schema
+│       clone_speaker.json
+│       tts_format.json
+│       tts_generate.json
 │
-├── task_handlers/               # Package for task handlers
-│   ├── __init__.py              # Makes it a Python package
-│   ├── audio_task.py            # Handles audio tasks
-│   ├── speaker_task.py          # Handles speaker-related tasks
-│   └── text_task.py             # Handles text-related tasks
+├───services
+│      audio_service.py
+│      health_service.py
+│      __init__.py
 │
-├── utils/                       # Package for utility functions
-│   ├── __init__.py              # Makes it a Python package
-│   ├── audio_utils.py           # Audio processing utilities
-│   ├── text_utils.py            # Text processing utilities
-│   └── shutdown_utils.py        # Graceful shutdown handling
+├───tests
+│       __init__.py
+│
+├───utils
+      audio_utils.py
+      error_utils.py
+      file_utils.py
+      logging_utils.py
+      redis_utils.py
+      task_utils.py
+      text_utils.py
+      __init__.py
+

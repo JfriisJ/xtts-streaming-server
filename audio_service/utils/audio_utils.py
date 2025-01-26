@@ -1,142 +1,161 @@
-import logging
-import re
 import io
+import logging
+import base64
+import uuid
+
 from pydub import AudioSegment
-from typing import List, Dict
-from transformers import GPT2TokenizerFast
 
-from audio_service.redis_utils import redis_client
+from audio_service.config import REDIS_HOST, REDIS_PORT, REDIS_DB_TASK, REDIS_DB_RESULT
+from audio_service.utils.logging_utils import setup_logger
+from audio_service.utils.redis_utils import fetch_languages_and_speakers, pop_from_queue, get_redis_client, \
+    update_status_in_redis
+from audio_service.utils.text_utils import split_text_into_chunks, split_text_into_tuples
 
-# Initialize the tokenizer
-tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+logger = setup_logger(name="AudioUtils")
 
-# Setup logger
-logger = logging.getLogger("AudioUtils")
+redis_task_queue = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB_TASK)
+redis_result_db = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB_RESULT)
 
-def aggregate_section_with_subsections(section: Dict, depth: int = 1) -> str:
+def generate_audio(task):
     """
-    Aggregate content of a section and its subsections, allowing up to 5 levels.
+    Splits the book into tuples and generates audio for each section in the specified format.
     """
-    if depth > 5:
-        return ""  # Ignore deeper levels
+    selected_title = task["selected_title"]
+    sections = task["sections"]
+    book_title = task["book_title"]
+    logger.info(f"Starting audio generation for the selected section: '{selected_title}'")
 
-    heading_marker = "#" * depth  # Use up to 5 # for heading markers
-    heading = section.get("Heading", "").strip()
-    content = section.get("Content", "")
+    def find_selected_section(sections, selected_title):
+        """
+        Recursively find the section or subsection matching the selected title.
+        """
+        for section in sections:
+            if section.get("Heading") == selected_title:
+                return [section]  # Wrap in a list for compatibility with split_text_into_tuples
+            if "Subsections" in section:
+                result = find_selected_section(section["Subsections"], selected_title)
+                if result:
+                    return result
+        return None
 
-    if isinstance(content, list):
-        content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
-    elif isinstance(content, str):
-        content = content.strip()
+    if selected_title == book_title:
+        # Generate audio for the entire book
+        tuples = split_text_into_tuples(sections)
     else:
-        content = ""
+        # Find the matching section or subsection
+        selected_section = find_selected_section(sections, selected_title)
+        if not selected_section:
+            logger.warning(f"No matching section found for '{selected_title}'")
+            return None
 
-    aggregated_content = f"{heading_marker} {heading}\n\n{content}"
+        # Generate audio for the selected section or subsection
+        tuples = split_text_into_tuples(selected_section)
 
-    for subsection in section.get("Subsections", []):
-        aggregated_content += "\n\n" + aggregate_section_with_subsections(subsection, depth + 1)
+    if not tuples:
+        logger.warning("No sections to process for audio generation.")
+        return None
 
-    return aggregated_content
+    generate_audio_from_tuples(tuples, task)
 
 
-def split_text_into_tuples(sections: List[Dict]) -> List[tuple]:
+def generate_audio_from_tuples(tuples, task):
     """
-    Splits the text into tuples of (index, section_name, content),
-    ensuring a maximum depth of 5 levels in the hierarchy.
+    Generate audio for each tuple in the provided list.
     """
-    tuples = []
-    section_counts = {}
+    logger.info("Starting audio generation from tuples.")
 
-    def process_section(section: Dict, level: int = 1, index_prefix: str = "1"):
-        """
-        Recursively process sections and limit hierarchy to 5 levels.
-        """
-        if level > 5:  # Ignore levels deeper than 5
-            return
+    for section_index, section_name, content in tuples:
+        if not content.strip():
+            logger.warning(f"Section '{section_name}' (Index: {section_index}) has no content.")
+            content = f"(No content for section '{section_name}')"
 
-        if index_prefix not in section_counts:
-            section_counts[index_prefix] = 0
-        section_counts[index_prefix] += 1
-
-        index_parts = index_prefix.split(".")
-        if len(index_parts) < level:
-            index_parts.append("0")
-        index_parts[level - 1] = str(section_counts[index_prefix])
-        while len(index_parts) < 5:
-            index_parts.append("0")
-
-        current_index = ".".join(index_parts[:5])
-        heading = section.get("Heading", "").strip()
-        content = section.get("Content", "")
-
-        if isinstance(content, list):
-            content = "\n".join([str(item).strip() for item in content if isinstance(item, str)])
-        elif isinstance(content, str):
-            content = content.strip()
-        else:
-            content = ""
-
-        combined_content = f"{heading}\n\n{content}"
-        tuples.append((current_index, heading, combined_content))
-
-        for subsection in section.get("Subsections", []):
-            process_section(subsection, level + 1, current_index)
-
-    for section in sections:
-        process_section(section)
-
-    return tuples
+        try:
+            logger.info(f"Generating audio for section '{section_name}' (Index: {section_index})")
+            text_to_audio(task, content=content, heading=section_name, section_index=section_index,)
+        except Exception as e:
+            logger.error(f"Error generating audio for section '{section_name}' (Index: {section_index}): {e}")
 
 
-def split_text_into_chunks(text: str, max_chars: int = 250, max_tokens: int = 350) -> List[str]:
+
+def text_to_audio(task, content, heading, section_index):
     """
-    Splits text into chunks based on character and token limits, breaking at sentence boundaries.
+    Convert text into audio using TTS service. Each chunk is sent to the TTS service via a queue, and results are
+    recombined after conversion.
     """
-    sentences = re.split(r'(?<=[.!?])\s+', text)  # Split by sentence-ending punctuation
-    chunks = []
-    current_chunk = ""
-    current_tokens = 0
+    from audio_service.core.mq import push_to_queue
+    speaker_type = task.get("speaker_type")
+    # Fetch speaker embeddings
+    languages, speakers, cloned_speaker = fetch_languages_and_speakers()
+    embeddings = (
+        speakers.get(task.get("speaker_name_studio"))
+        if speaker_type == "Studio"
+        else cloned_speaker.get(task.get("speaker_name_custom"))
+    )
+    if not embeddings:
+        logger.error(f"No embeddings found for speaker type '{speaker_type}' and speaker name.")
+        return None
 
-    for sentence in sentences:
-        # Get the token count for the sentence
-        sentence_tokens = len(tokenizer.encode(sentence, add_special_tokens=False))
+    # Split text into chunks
+    chunks = split_text_into_chunks(content)
+    task_ids = []
 
-        # If adding the sentence exceeds the limits, finalize the current chunk
-        if len(current_chunk) + len(sentence) > max_chars or current_tokens + sentence_tokens > max_tokens:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-                current_chunk = ""
-                current_tokens = 0
+    # update the task status
+    task["status"] = "TTS conversion"
+    update_status_in_redis(task.get("job_id"), task["status"])
 
-        # If the sentence itself is too large, split it
-        if len(sentence) > max_chars or sentence_tokens > max_tokens:
-            sentence_parts = [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
-            for part in sentence_parts:
-                part_tokens = len(tokenizer.encode(part, add_special_tokens=False))
-                if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
-                    current_chunk += part + " "
-                    current_tokens += part_tokens
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = part + " "
-                    current_tokens = part_tokens
-        else:
-            # Add the sentence to the current chunk
-            current_chunk += sentence + " "
-            current_tokens += sentence_tokens
+    # Queue each chunk for TTS conversion
+    for idx, chunk in enumerate(chunks):
+        task_id = str(uuid.uuid4())
+        tts_task = {
+            "task_id": task_id,
+            "job_id": task.get("job_id"),
+            "text": chunk,
+            "language": task.get("language"),
+            "speaker_embedding": embeddings["speaker_embedding"],
+            "gpt_cond_latent": embeddings["gpt_cond_latent"],
+            "cache_key": f"cache:{task.get("book_title")}:{section_index}:{idx}"
+        }
+        push_to_queue(redis_task_queue, tts_task, "tts_conversion_queue")
+        task_ids.append(task_id)
+        logger.info(f"Task {task_id} for chunk {idx} queued successfully.")
 
-    # Add the last chunk if it's not empty
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
+    # Wait for results and collect them
+    audio_chunks = []
+    for task_id in task_ids:
+        try:
+            while True:
+                result = pop_from_queue(redis_task_queue, "tts_result_queue")
+                if result and result["task_id"] == task_id:
+                    audio_chunks.append(base64.b64decode(result["audio_base64"]))
+                    logger.info(f"Received audio for task {task_id}")
+                    break
+        except Exception as e:
+            logger.error(f"Error while waiting for result of task {task_id}: {e}")
 
-    return chunks
+
+    # Combine chunks into a single audio file
+    if audio_chunks:
+        concatenate_audios(task, audio_chunks, section_index, heading)
+    else:
+        logger.warning(f"No audio chunks were generated for heading: '{heading}'")
 
 
-def concatenate_audios(redis_keys: List[str], output_format: str = "wav", pauses: Dict[str, int] = None) -> bytes:
+def concatenate_audios(task, audio_chunks, section_index, heading, pauses=None):
     """
-    Combines multiple audio files into one, adding pauses between sentences.
+    Combines multiple audio files from Redis into one, adding pauses between sentences, and saves the final audio to Redis.
+
+    :param redis_keys: List of Redis keys pointing to cached audio chunks.
+    :param book_title: Title of the book, used to generate the Redis key.
+    :param section_index: Section index used to generate the Redis key.
+    :param heading: Heading used to generate the Redis key.
+    :param pauses: Dictionary specifying pause durations in milliseconds, e.g., {"sentence": 500, "heading": 1000}.
     """
+    # update the task status
+    task["status"] = "Combining audio chunks"
+    update_status_in_redis(task.get("job_id"), task["status"])
+
+    output_format = task.get("output_format")
+    book_title = task.get("book_title")
     if pauses is None:
         pauses = {"sentence": 500, "heading": 1000}  # Default pauses in milliseconds
 
@@ -144,115 +163,30 @@ def concatenate_audios(redis_keys: List[str], output_format: str = "wav", pauses
     pause_between_sentences = AudioSegment.silent(duration=pauses["sentence"])
     pause_between_heading_and_text = AudioSegment.silent(duration=pauses["heading"])
 
-    for idx, redis_key in enumerate(redis_keys):
-        # Fetch audio from Redis (mocked for utility)
-        audio_binary = redis_client.get(redis_key)
-        if not audio_binary:
-            logger.error(f"Audio chunk not found for key: {redis_key}")
-            continue
+    for idx, chunk in enumerate(audio_chunks):
 
-        audio = AudioSegment.from_file(io.BytesIO(audio_binary), format=output_format)
+        # Load audio from binary
+        audio = AudioSegment.from_file(io.BytesIO(chunk), format=output_format)
 
+        # Add pause and concatenate
         if idx == 0:
             combined += audio + pause_between_heading_and_text
         else:
             combined += pause_between_sentences + audio
 
-    return combined.raw_data
+    # Remove trailing silence
+    combined = combined[:-len(pause_between_sentences)]
+
+    # Save concatenated audio to Redis
+    redis_key = f"{book_title}:{section_index}:{heading}"
+    output_buffer = io.BytesIO()
+    combined.export(output_buffer, format="wav")  # Export to buffer
+    redis_result_db.set(redis_key, output_buffer.getvalue())  # Save to Redis
+    # update the task status
+    task["status"] = "completed"
+    update_status_in_redis(task.get("job_id"), task["status"])
+
+    logger.info(f"Saved concatenated audio to Redis with key: {redis_key}")
 
 
 
-
-def generate_audio(task, tts_service, output_format="wav"):
-    """
-    Generates audio from text and metadata in the task.
-
-    Args:
-        task (dict): The task containing text, language, speaker details, etc.
-        tts_service (object): A TTS service object or function to convert text to audio.
-        output_format (str): The desired output audio format (e.g., "wav", "mp3").
-
-    Returns:
-        dict: A result dictionary containing the audio data in base64 and metadata.
-    """
-    try:
-        text = task.get("text")
-        language = task.get("language", "en")
-        speaker_embedding = task.get("speaker_embedding")
-        gpt_cond_latent = task.get("gpt_cond_latent")
-        task_id = task.get("task_id")
-
-        if not text or not task_id:
-            raise ValueError("Task must contain 'text' and 'task_id'.")
-
-        logger.info(f"Processing task {task_id} with language {language}.")
-
-        # Split text into manageable chunks
-        text_chunks = split_text_into_chunks(text)
-
-        audio_chunks = []
-        for idx, chunk in enumerate(text_chunks):
-            logger.debug(f"Generating audio for chunk {idx + 1}/{len(text_chunks)}")
-            audio_data = tts_service(
-                text=chunk,
-                language=language,
-                speaker_embedding=speaker_embedding,
-                gpt_cond_latent=gpt_cond_latent,
-                output_format=output_format,
-            )
-            if audio_data:
-                audio_chunks.append(audio_data)
-            else:
-                logger.warning(f"Audio generation failed for chunk {idx + 1}.")
-
-        if not audio_chunks:
-            logger.error(f"Audio generation failed for task {task_id}.")
-            return {"task_id": task_id, "status": "failed", "audio": None}
-
-        # Combine audio chunks if needed
-        combined_audio = combine_audio_chunks(audio_chunks, output_format=output_format)
-
-        logger.info(f"Audio generated successfully for task {task_id}.")
-        return {"task_id": task_id, "status": "success", "audio": combined_audio}
-
-    except Exception as e:
-        logger.error(f"Error generating audio for task {task.get('task_id', 'unknown')}: {e}")
-        return {"task_id": task.get("task_id", "unknown"), "status": "failed", "audio": None}
-
-
-def combine_audio_chunks(chunks, output_format="wav"):
-    """
-    Combines multiple audio chunks into a single audio file.
-
-    Args:
-        chunks (list): List of audio data (binary or base64-encoded).
-        output_format (str): The desired output audio format.
-
-    Returns:
-        bytes: The combined audio file data.
-    """
-    from pydub import AudioSegment
-    import io
-
-    combined_audio = AudioSegment.empty()
-    for idx, chunk in enumerate(chunks):
-        try:
-            audio_segment = AudioSegment.from_file(io.BytesIO(chunk), format=output_format)
-            combined_audio += audio_segment
-        except Exception as e:
-            logger.error(f"Error combining chunk {idx + 1}: {e}")
-            continue
-
-    # Export the combined audio to bytes
-    audio_buffer = io.BytesIO()
-    combined_audio.export(audio_buffer, format=output_format)
-    audio_buffer.seek(0)
-
-    return audio_buffer.getvalue()
-
-
-def clean_filename(filename: str) -> str:
-    """
-    Cleans the filename by removing or replacing invalid characters.
-    """
-    return re.sub(r'[<>:"/\\|?*]', '_', filename).strip()
