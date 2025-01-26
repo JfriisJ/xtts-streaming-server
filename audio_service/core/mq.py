@@ -3,9 +3,11 @@ from typing import List
 
 import redis
 
-from audio_service.core.task_handlers import process_audio_task, process_speaker_task, process_text_task
+from audio_service.core.task_handlers import process_audio_task, process_speaker_task, process_text_task, \
+    process_tts_result
 from audio_service.utils.logging_utils import setup_logger
 from audio_service.utils.task_utils import validate_task
+
 
 logger = setup_logger(name="MQ")
 
@@ -46,6 +48,8 @@ def listen_to_queues(redis_client, queues: List[str]):
                 process_speaker_task(task)
             elif queue == "text_tasks":
                 process_text_task(task)
+            elif queue == "tts_results":
+                process_tts_result(task)
             else:
                 logger.warning(f"Unhandled queue: {queue}")
         except Exception as e:

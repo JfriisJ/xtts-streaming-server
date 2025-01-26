@@ -1,8 +1,8 @@
 import threading
-import logging
 import signal
 
 from audio_service.utils.logging_utils import setup_logger
+
 
 # Logging setup
 logger = setup_logger(name="Main")
@@ -17,10 +17,10 @@ def shutdown_handler(signum, frame):
 
 
 def main():
-    from utils.redis_utils import get_redis_client
     from core.mq import listen_to_queues
     from audio_service.services.health_service import listen_for_health_checks
-    from audio_service.config import REDIS_HOST, REDIS_PORT, TASK_QUEUES, REDIS_DB_TASK, REDIS_DB_HEALTH
+    from audio_service.config import  TASK_QUEUES
+    from audio_service.utils.redis_utils import redis_client_db_task
 
     """
     Main entry point for the TTS service.
@@ -31,9 +31,6 @@ def main():
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
-    # Initialize Redis client
-    redis_client = get_redis_client(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_TASK, decode_responses=True)
-
     # Start health check listener in a separate thread
     health_check_thread = threading.Thread(target=listen_for_health_checks, daemon=True)
     health_check_thread.start()
@@ -41,7 +38,7 @@ def main():
 
     # Start queue listener for task processing
     try:
-        listen_to_queues(redis_client, TASK_QUEUES)
+        listen_to_queues(redis_client_db_task, TASK_QUEUES)
     except Exception as e:
         logger.error(f"Error while listening to queues: {e}")
 

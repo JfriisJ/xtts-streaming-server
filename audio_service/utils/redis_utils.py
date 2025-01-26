@@ -1,14 +1,14 @@
+import time
 
 import redis
 import json
-import logging
 
-from audio_service.config import REDIS_HOST, REDIS_PORT, REDIS_DB_DATA_MODEL, REDIS_DB_STATUS
+from audio_service.config import REDIS_HOST, REDIS_PORT, REDIS_DB_DATA_MODEL, REDIS_DB_STATUS, REDIS_DB_HEALTH, \
+    REDIS_DB_TASK, REDIS_DB_RESULT
 from audio_service.utils.logging_utils import setup_logger
 
 # Logging setup
 logger = setup_logger(name="RedisUtils")
-
 
 def get_redis_client(host: str = "localhost", port: int = 6379, db: int = 0,decode_responses=False) -> redis.StrictRedis:
     """
@@ -26,6 +26,13 @@ def get_redis_client(host: str = "localhost", port: int = 6379, db: int = 0,deco
     except redis.ConnectionError as e:
         logger.error(f"Failed to connect to Redis: {e}")
         raise
+
+# Initialize Redis client
+redis_client_db_status = get_redis_client(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_STATUS, decode_responses=True)
+redis_client_db_health = get_redis_client(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_HEALTH, decode_responses=True)
+redis_client_db_task = get_redis_client(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_TASK, decode_responses=True)
+redis_client_db_result = get_redis_client(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_RESULT, decode_responses=True)
+redis_client_db_data_model = get_redis_client(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_DATA_MODEL, decode_responses=True)
 
 
 def push_to_queue(redis_client, queue_name, task):
@@ -151,45 +158,67 @@ def get_all_keys(redis_client: redis.StrictRedis, pattern: str = "*") -> list:
 
 
 def fetch_languages_and_speakers():
-    """Fetch languages and speakers from Redis."""
+    """
+    Fetch languages, studio speakers, and cloned speakers from Redis.
+    Returns them as parsed Python objects (lists or dictionaries).
+    """
     try:
-        redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB_DATA_MODEL)
-        languages = redis_client.get("data:xtts:languages")
-        studio_speakers = redis_client.get("data:xtts:studio_speakers")
-        cloned_speakers = redis_client.get("data:xtts:cloned_speakers")
+        # Fetch data from Redis
+        languages = redis_client_db_data_model.get("data:xtts:languages")
+        studio_speakers = redis_client_db_data_model.get("data:xtts:speakers")
+        cloned_speakers = redis_client_db_data_model.get("data:xtts:cloned_speakers")
 
-        return (
-            json.loads(languages) if languages else [],
-            json.loads(studio_speakers) if studio_speakers else {},
-            json.loads(cloned_speakers) if cloned_speakers else {},
+        # Parse JSON strings into Python objects
+        languages = json.loads(languages) if languages else []
+        studio_speakers = json.loads(studio_speakers) if studio_speakers else {}
+        cloned_speakers = json.loads(cloned_speakers) if cloned_speakers else {}
+
+        # Log only the keys for dictionaries
+        logger.info(
+            f"Fetched languages: {languages}, \n"
+            f"studio speakers keys: {list(studio_speakers.keys())}, \n"
+            f"cloned speakers keys: {list(cloned_speakers.keys())}"
         )
+
+        return languages, studio_speakers, cloned_speakers
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse JSON data from Redis: {e}")
+        return [], {}, {}
     except Exception as e:
-        logger.error(f"Error fetching languages and speakers: {e}")
+        logger.error(f"Error fetching data from Redis: {e}")
         return [], {}, {}
 
 
 def update_status_in_redis(job_id, status):
     """
-    Updates the status of a job in Redis.
+    Updates the status of a job in Redis with a timestamp.
 
     Args:
-        redis_client: Redis client instance.
         job_id (str): The ID of the job.
         status (str): The status to be updated (e.g., 'processing', 'converting').
 
     Returns:
         bool: True if the update was successful, False otherwise.
     """
-    redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB_STATUS)
     if not job_id or not status:
         logger.error("Job ID and status are required.")
         return False
 
     redis_key = f"{job_id}:status"
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # ISO-8601 format
+
+    # Create the status object
+    status_data = {
+        "status": status,
+        "timestamp": timestamp
+    }
+
     try:
-        redis_client.set(redis_key, status)
-        logger.info(f"Updated Redis: {redis_key} -> {status}")
+        # Save as JSON string
+        redis_client_db_status.set(redis_key, json.dumps(status_data))
+        logger.info(f"Updated Redis: {redis_key} -> {status_data}")
         return True
     except Exception as e:
         logger.error(f"Failed to update Redis for {redis_key}: {e}")
         return False
+

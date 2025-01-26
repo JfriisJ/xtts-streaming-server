@@ -1,14 +1,11 @@
-import logging
 import base64
 import uuid
 
-from audio_service.config import REDIS_HOST, REDIS_PORT, REDIS_DB_TASK
 from audio_service.utils.logging_utils import setup_logger
-from audio_service.utils.redis_utils import push_to_queue, get_redis_client
+from audio_service.utils.redis_utils import push_to_queue, redis_client_db_task, update_status_in_redis
+from audio_service.utils.task_utils import validate_task
 
 logger = setup_logger(name="AudioUtils")
-
-redis_task_queue = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB_TASK)
 
 def process_clone_speaker_task(task: dict):
     """
@@ -44,7 +41,7 @@ def process_clone_speaker_task(task: dict):
         }
 
         # Enqueue the task into the 'speaker_tasks' queue
-        push_to_queue(redis_task_queue, "speaker_tasks", queue_task)
+        push_to_queue(redis_client_db_task,"speaker_tasks", queue_task)
 
         logger.info(f"Speaker cloning task for '{speaker_name}' enqueued successfully with Task ID: {task_id}.")
 
@@ -52,7 +49,7 @@ def process_clone_speaker_task(task: dict):
         logger.error(f"Error processing speaker cloning task: {e}")
 
 
-def enqueue_tts_task(text: str, language: str, speaker_embedding: list, gpt_cond_latent: list):
+def enqueue_tts_task(task, section_index, idx, total_chunks, heading, chunk, speaker, speaker_type, embeddings, task_ids):
     """
     Enqueue a TTS task into the audio_tasks queue and wait for its result.
 
@@ -64,20 +61,38 @@ def enqueue_tts_task(text: str, language: str, speaker_embedding: list, gpt_cond
     try:
         # Generate a unique task ID
         task_id = str(uuid.uuid4())
-
-        # Create the task payload
-        task = {
+        tts_task = {
             "task_id": task_id,
-            "text": text,
-            "language": language,
-            "speaker_embedding": speaker_embedding,
-            "gpt_cond_latent": gpt_cond_latent,
+            "job_id": task.get("job_id"),
+            "section_index": section_index,
+            "chunk_index": idx,
+            "total_chunks": total_chunks,  # Include total chunks in the task
+            "heading": heading,
+            "text": chunk,
+            "language": task.get("language"),
+            "speaker": speaker,
+            "speaker_type": speaker_type,
+            "speaker_embedding": embeddings["speaker_embedding"],
+            "gpt_cond_latent": embeddings["gpt_cond_latent"],
+            "cache_key": f"cache:{task.get('book_title')}:{section_index}:{idx}",
+            "book_title": task.get("book_title"),
+            "timestamp": task.get("timestamp"),
         }
-
-        # Enqueue the task
-        push_to_queue(redis_task_queue, "audio_tasks", task)
-        logger.info(f"TTS task {task_id} added to the audio_tasks queue.")
-
+        if validate_task(tts_task):
+            push_to_queue(redis_client_db_task, tts_task, "generate_tts_tasks")
+            task_ids.append(task_id)
+            logger.info(
+            f"Task {task_id} for chunk {idx + 1}/{total_chunks} of section '{heading}' "
+            f"(section_index: {section_index}) queued successfully."
+            )
+        else:
+            logger.warning(f"Task skipped due to validation failure: {tts_task}")
+            # Update the task status
+        task["status"] = "awaiting audio chunks"
+        update_status_in_redis(task.get("job_id"), task["status"])
     except Exception as e:
-        logger.error(f"Error in enqueue_tts_task: {e}")
-    return ""
+        logger.error(f"Error enqueuing TTS task: {e}")
+        # Update the task status
+        task["status"] = "failed"
+        update_status_in_redis(task.get("job_id"), task["status"])
+        return False

@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "task_type": {
+      "type": "string",
+      "enum": ["tts_convert_format"],
+      "description": "Type of the task."
+    },
+    "Title": {
+      "type": "string",
+      "description": "The title of the document."
+    },
+    "Sections": {
+      "type": "array",
+      "description": "An array of sections in the document.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "Heading": {
+            "type": "string",
+            "description": "The heading of the section."
+          },
+          "Content": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "The content of the section as a string."
+              },
+              {
+                "type": "array",
+                "description": "The content of the section as an array of strings.",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "Subsections": {
+            "type": "array",
+            "description": "An array of subsections within the section.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "Heading": {
+                  "type": "string",
+                  "description": "The heading of the subsection."
+                },
+                "Content": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "description": "The content of the subsection as a string."
+                    },
+                    {
+                      "type": "array",
+                      "description": "The content of the subsection as an array of strings.",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "Subsections": {
+                  "type": "array",
+                  "description": "An array of subsubsections within the subsection.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "Heading": {
+                        "type": "string",
+                        "description": "The heading of the subsubsection."
+                      },
+                      "Content": {
+                        "oneOf": [
+                          {
+                            "type": "string",
+                            "description": "The content of the subsubsection as a string."
+                          },
+                          {
+                            "type": "array",
+                            "description": "The content of the subsubsection as an array of strings.",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        ]
+                      },
+                      "Subsections": {
+                        "type": "array",
+                        "description": "An array of subsubsubsections within the subsubsection.",
+                        "items": {
+                          "$ref": "#/definitions/section"
+                        }
+                      }
+                    },
+                    "required": ["Heading"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["Heading"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["Heading"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["Title", "Sections"],
+  "additionalProperties": false,
+  "definitions": {
+    "section": {
+      "type": "object",
+      "properties": {
+        "Heading": {
+          "type": "string",
+          "description": "The heading of the subsection."
+        },
+        "Content": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The content of the subsection as a string."
+            },
+            {
+              "type": "array",
+              "description": "The content of the subsection as an array of strings.",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "Subsections": {
+          "type": "array",
+          "description": "An array of nested subsections.",
+          "items": {
+            "$ref": "#/definitions/section"
+          }
+        }
+      },
+      "required": ["Heading"],
+      "additionalProperties": false
+    }
+  }
+}
