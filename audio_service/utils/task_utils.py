@@ -13,13 +13,16 @@ try:
         tts_format_schema = json.load(schema_file)
     with open("schema/tts_generate.json", "r") as schema_file:
         tts_generate_schema = json.load(schema_file)
+    with open("schema/tts_audio.json", "r") as schema_file:
+        tts_audio_schema = json.load(schema_file)
 except json.JSONDecodeError as e:
     logger.error(f"Error loading JSON schema: {e}")
     raise
 
 schema_registry = {
     "tts_generate": tts_generate_schema,
-    "tts_format": tts_format_schema
+    "tts_format": tts_format_schema,
+    "tts_audio": tts_audio_schema
 }
 
 

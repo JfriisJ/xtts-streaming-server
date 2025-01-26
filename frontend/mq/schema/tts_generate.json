@@ -1,6 +1,11 @@
 {
   "type": "object",
   "properties": {
+    "task_type": {
+      "type": "string",
+      "enum": ["tts_generate"],
+      "description": "Type of the task."
+    },
     "task_id": {
       "type": "string",
       "description": "Unique identifier for the task."

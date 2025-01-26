@@ -1,0 +1,65 @@
+{
+  "type": "object",
+  "properties": {
+    "task_type": {
+      "type": "string",
+      "enum": ["tts_audio"],
+      "description": "Type of the task."
+    },
+    "task_id": {
+      "type": "string",
+      "description": "Unique identifier for the task."
+    },
+    "job_id": {
+      "type": "string",
+      "description": "Unique identifier for the job."
+    },
+    "section_index": {
+      "type": "integer",
+      "description": "Index of the section in the book."
+    },
+    "chunk_index": {
+      "type": "integer",
+      "description": "Index of the chunk within the section."
+    },
+    "audio_chunk": {
+      "type": "string",
+      "description": "Base64 encoded audio data."
+    },
+    "total_chunks": {
+      "type": "integer",
+      "description": "Total number of chunks in the section."
+    },
+    "heading": {
+      "type": "string",
+      "description": "Heading of the section or chunk."
+    },
+    "cache_key": {
+      "type": "string",
+      "description": "Cache key for identifying the chunk."
+    },
+    "book_title": {
+      "type": "string",
+      "description": "Title of the book."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when the task was created."
+    }
+  },
+  "required": [
+    "task_type",
+    "task_id",
+    "job_id",
+    "section_index",
+    "chunk_index",
+    "audio_chunk",
+    "total_chunks",
+    "heading",
+    "cache_key",
+    "book_title",
+    "timestamp"
+  ],
+  "additionalProperties": false
+}

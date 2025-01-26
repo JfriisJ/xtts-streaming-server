@@ -1,125 +1,97 @@
 {
   "type": "object",
   "properties": {
-    "Title": {
+    "task_type": {
       "type": "string",
-      "description": "The title of the document."
+      "enum": ["tts_format"],
+      "description": "Type of the task."
     },
-    "Sections": {
+    "task_id": {
+      "type": "string",
+      "description": "Unique identifier for the task."
+    },
+    "job_id": {
+      "type": "string",
+      "description": "Unique identifier for the job."
+    },
+    "book_title": {
+      "type": "string",
+      "description": "Title of the book."
+    },
+    "selected_title": {
+      "type": "string",
+      "description": "Title of the selected section."
+    },
+    "sections": {
       "type": "array",
-      "description": "An array of sections in the document.",
       "items": {
-        "$ref": "#/definitions/section"
-      }
+        "type": "object",
+        "properties": {
+          "Heading": {
+            "type": "string",
+            "description": "Heading of the section."
+          },
+          "Content": {
+            "type": ["string", "array"],
+            "description": "Content of the section, can be a string or a list."
+          },
+          "Subsections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/properties/sections/items"
+            },
+            "description": "List of subsections."
+          }
+        },
+        "required": ["Heading", "Content"]
+      },
+      "description": "List of sections and their content."
     },
-    "Language": {
+    "language": {
       "type": "string",
-      "description": "The language of the audio or content, following ISO 639-1 standards."
+      "description": "Language of the content."
     },
-    "Speaker": {
+    "speaker": {
       "type": "string",
-      "description": "The name or identifier of the speaker."
+      "description": "Speaker identifier."
     },
-    "SpeakerType": {
+    "speaker_type": {
       "type": "string",
-      "enum": [
-        "Studio",
-        "Cloned",
-        "human",
-        "AI",
-        "hybrid"
-      ],
-      "description": "The type of speaker delivering the audio."
+      "enum": ["Studio", "Custom"],
+      "description": "Type of speaker (e.g., Studio or Custom)."
     },
-    "AudioFormat": {
+    "output_format": {
       "type": "string",
-      "enum": [
-        "mp3",
-        "wav",
-        "ogg",
-        "flac"
-      ],
-      "description": "The format of the audio file."
+      "enum": ["mp3", "wav", "ogg"],
+      "description": "Desired audio format."
     },
-    "ID": {
+    "status": {
       "type": "string",
-      "description": "A unique identifier for the content or audio job."
+      "description": "Status of the task."
     },
-    "Status": {
-      "type": "string",
-      "enum": [
-        "pending",
-        "in_progress",
-        "completed",
-        "failed"
-      ],
-      "description": "The current status of the audio processing task."
-    },
-    "Timestamp": {
+    "timestamp": {
       "type": "string",
       "format": "date-time",
-      "description": "The timestamp when the content was created or submitted."
+      "description": "Timestamp of the task creation."
     },
-    "Priority": {
+    "priority": {
       "type": "string",
-      "enum": [
-        "low",
-        "normal",
-        "high"
-      ],
-      "description": "The priority level for processing the task."
-    },
-    "PlaybackSpeed": {
-      "type": "number",
-      "minimum": 0.5,
-      "maximum": 2.0,
-      "description": "The playback speed multiplier for the audio."
-    },
-    "VoiceStyle": {
-      "type": "string",
-      "description": "The style or tone of the voice, such as 'formal', 'casual', or 'narrative'."
+      "enum": ["low", "normal", "high"],
+      "description": "Priority level of the task."
     }
   },
   "required": [
-    "Title",
-    "Sections",
-    "Language",
-    "AudioFormat",
-    "ID"
-  ],
-  "definitions": {
-    "section": {
-      "type": "object",
-      "properties": {
-        "Heading": {
-          "type": "string",
-          "description": "The heading of the section."
-        },
-        "Content": {
-          "oneOf": [
-            {
-              "type": "string",
-              "description": "The content of the section as a string."
-            },
-            {
-              "type": "array",
-              "description": "The content of the section as an array of strings.",
-              "items": {
-                "type": "string"
-              }
-            }
-          ]
-        },
-        "Subsections": {
-          "type": "array",
-          "description": "An array of subsections within the section.",
-          "items": {
-            "$ref": "#/definitions/section"
-          }
-        }
-      },
-      "required": ["Heading"],
-      "additionalProperties": false
-    }
-  }
+    "task_id",
+    "job_id",
+    "book_title",
+    "selected_title",
+    "sections",
+    "language",
+    "speaker",
+    "speaker_type",
+    "output_format",
+    "status",
+    "timestamp",
+    "priority"
+  ]
 }

@@ -1,61 +1,13 @@
 import json
-import logging
-import re
 
 from transformers import GPT2TokenizerFast
 
 from audio_service.utils.logging_utils import setup_logger
 
-tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+
 
 # Logging setup
 logger = setup_logger(name="TextUtils")
-
-def split_text_into_chunks(text, max_chars=250, max_tokens=350):
-    """
-    Splits text into chunks based on character and token limits, breaking at sentence boundaries.
-    """
-    sentences = re.split(r'(?<=[.!?])\s+', text)  # Split by sentence-ending punctuation
-    chunks = []
-    current_chunk = ""
-    current_tokens = 0
-
-    for sentence in sentences:
-        # Get the token count for the sentence
-        sentence_tokens = len(tokenizer.encode(sentence, add_special_tokens=False))
-
-        # If adding the sentence exceeds the limits, finalize the current chunk
-        if len(current_chunk) + len(sentence) > max_chars or current_tokens + sentence_tokens > max_tokens:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-                current_chunk = ""
-                current_tokens = 0
-
-        # If the sentence itself is too large, split it
-        if len(sentence) > max_chars or sentence_tokens > max_tokens:
-            sentence_parts = [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
-            for part in sentence_parts:
-                part_tokens = len(tokenizer.encode(part, add_special_tokens=False))
-                if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
-                    current_chunk += part + " "
-                    current_tokens += part_tokens
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = part + " "
-                    current_tokens = part_tokens
-        else:
-            # Add the sentence to the current chunk
-            current_chunk += sentence + " "
-            current_tokens += sentence_tokens
-
-    # Add the last chunk if it's not empty
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
-
-    return chunks
-
-
 
 def aggregate_section_with_subsections(section, depth=1):
     """

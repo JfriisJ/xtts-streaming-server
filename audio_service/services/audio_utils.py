@@ -1,11 +1,15 @@
 import io
+import re
+
 from pydub import AudioSegment
+from transformers import GPT2TokenizerFast
+
+tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
 
 from audio_service.services.audio_service import enqueue_tts_task
 from audio_service.utils.logging_utils import setup_logger
 from audio_service.utils.redis_utils import fetch_languages_and_speakers, update_status_in_redis, redis_client_db_result
-from audio_service.utils.task_utils import validate_task
-from audio_service.utils.text_utils import split_text_into_chunks, split_text_into_tuples
+from audio_service.utils.text_utils import split_text_into_tuples
 
 logger = setup_logger(name="AudioUtils")
 
@@ -68,6 +72,50 @@ def generate_audio_from_tuples(tuples, task):
         except Exception as e:
             logger.error(f"Error generating audio for section '{section_name}' (Index: {section_index}): {e}")
 
+def split_text_into_chunks(text, max_chars=250, max_tokens=350):
+    """
+    Splits text into chunks based on character and token limits, breaking at sentence boundaries.
+    """
+    sentences = re.split(r'(?<=[.!?])\s+', text)  # Split by sentence-ending punctuation
+    chunks = []
+    current_chunk = ""
+    current_tokens = 0
+
+    for sentence in sentences:
+        # Get the token count for the sentence
+        sentence_tokens = len(tokenizer.encode(sentence, add_special_tokens=False))
+
+        # If adding the sentence exceeds the limits, finalize the current chunk
+        if len(current_chunk) + len(sentence) > max_chars or current_tokens + sentence_tokens > max_tokens:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+                current_tokens = 0
+
+        # If the sentence itself is too large, split it
+        if len(sentence) > max_chars or sentence_tokens > max_tokens:
+            sentence_parts = [sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars)]
+            for part in sentence_parts:
+                part_tokens = len(tokenizer.encode(part, add_special_tokens=False))
+                if len(current_chunk) + len(part) <= max_chars and current_tokens + part_tokens <= max_tokens:
+                    current_chunk += part + " "
+                    current_tokens += part_tokens
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = part + " "
+                    current_tokens = part_tokens
+        else:
+            # Add the sentence to the current chunk
+            current_chunk += sentence + " "
+            current_tokens += sentence_tokens
+
+    # Add the last chunk if it's not empty
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
 def text_to_audio(task, content, heading, section_index):
     """
     Convert text into audio using TTS service. Each chunk is sent to the TTS service via a queue,
@@ -101,29 +149,6 @@ def text_to_audio(task, content, heading, section_index):
     for idx, chunk in enumerate(chunks):
         enqueue_tts_task(task, section_index, idx, total_chunks, heading, chunk, speaker, speaker_type, embeddings, task_ids)
 
-
-        # task_id = str(uuid.uuid4())
-        # tts_task = {
-        #     "task_id": task_id,
-        #     "job_id": task.get("job_id"),
-        #     "section_index": section_index,
-        #     "chunk_index": idx,
-        #     "total_chunks": total_chunks,  # Include total chunks in the task
-        #     "heading": heading,
-        #     "text": chunk,
-        #     "language": task.get("language"),
-        #     "speaker": speaker,
-        #     "speaker_type": speaker_type,
-        #     "speaker_embedding": embeddings["speaker_embedding"],
-        #     "gpt_cond_latent": embeddings["gpt_cond_latent"],
-        #     "cache_key": f"cache:{task.get('book_title')}:{section_index}:{idx}",
-        #     "book_title": task.get("book_title"),
-        #     "timestamp": task.get("timestamp"),
-        # }
-
-
-
-
 def concatenate_audios(task):
     """
     Combines multiple audio files from Redis into one, adding pauses between sentences,
@@ -135,10 +160,13 @@ def concatenate_audios(task):
     :param section_index: Section index used to generate the Redis key.
     :param heading: Heading used to generate the Redis key.
     """
+    job_id = task.get("job_id")
     audio_chunks = task.get("audio_chunks")
     total_chunks = task.get("total_chunks")
     section_index = task.get("section_index")
     heading = task.get("heading")
+    output_format = task.get("output_format")
+    book_title = task.get("book_title")
 
     # Ensure all chunks are received
     if len(audio_chunks) != total_chunks:
@@ -147,15 +175,13 @@ def concatenate_audios(task):
             f"Expected {total_chunks}, but got {len(audio_chunks)}."
         )
         task["status"] = "error"
-        update_status_in_redis(task.get("job_id"), task["status"])
+        update_status_in_redis(job_id, task["status"])
         return
 
     # Update the task status
     task["status"] = "Combining audio chunks"
     update_status_in_redis(task.get("job_id"), task["status"])
 
-    output_format = task.get("output_format")
-    book_title = task.get("book_title")
     pauses = {"sentence": 500, "heading": 1000}  # Default pauses in milliseconds
 
     combined = AudioSegment.empty()
@@ -196,119 +222,6 @@ def concatenate_audios(task):
         logger.error(f"Error saving final audio to Redis for key {redis_key}: {e}")
         task["status"] = "error"
         update_status_in_redis(task.get("job_id"), task["status"])
-
-
-# def text_to_audio(task, content, heading, section_index):
-#     """
-#     Convert text into audio using TTS service. Each chunk is sent to the TTS service via a queue, and results are
-#     recombined after conversion.
-#     """
-#     from audio_service.core.mq import push_to_queue
-#     speaker_type = task.get("speaker_type")
-#     speaker = task.get("speaker")
-#     # Fetch speaker embeddings
-#     languages, speakers, cloned_speaker = fetch_languages_and_speakers()
-#     embeddings = (
-#         speakers.get(speaker)
-#         if speaker_type == "Studio"
-#         else cloned_speaker.get(task.get("speaker"))
-#     )
-#     if not embeddings:
-#         logger.error(f"No embeddings found for speaker type '{speaker_type}' and speaker name. '{speaker}'")
-#         logger.error(f"Available speakers: {speakers.keys()}")
-#         return None
-#
-#     # Split text into chunks
-#     chunks = split_text_into_chunks(content)
-#     task_ids = []
-#
-#     # update the task status
-#     task["status"] = "TTS conversion"
-#     update_status_in_redis(task.get("job_id"), task["status"])
-#
-#     # Queue each chunk for TTS conversion
-#     for idx, chunk in enumerate(chunks):
-#         task_id = str(uuid.uuid4())
-#         tts_task = {
-#             "task_id": task_id,
-#             "job_id": task.get("job_id"),
-#             "text": chunk,
-#             "language": task.get("language"),
-#             "speaker_embedding": embeddings["speaker_embedding"],
-#             "gpt_cond_latent": embeddings["gpt_cond_latent"],
-#             "cache_key": f"cache:{task.get("book_title")}:{section_index}:{idx}"
-#         }
-#         push_to_queue(redis_task_queue, tts_task, "tts_conversion_queue")
-#         task_ids.append(task_id)
-#         logger.info(f"Task {task_id} for chunk {idx} queued successfully.")
-#
-#     # Wait for results and collect them
-#     audio_chunks = []
-#     for task_id in task_ids:
-#         try:
-#             while True:
-#                 result = pop_from_queue(redis_task_queue, "tts_result_queue")
-#                 if result and result["task_id"] == task_id:
-#                     audio_chunks.append(base64.b64decode(result["audio_base64"]))
-#                     logger.info(f"Received audio for task {task_id}")
-#                     break
-#         except Exception as e:
-#             logger.error(f"Error while waiting for result of task {task_id}: {e}")
-#
-#     # Combine chunks into a single audio file
-#     if audio_chunks:
-#         concatenate_audios(task, audio_chunks, section_index, heading)
-#     else:
-#         logger.warning(f"No audio chunks were generated for heading: '{heading}'")
-
-
-# def concatenate_audios(task):
-#     """
-#     Combines multiple audio files from Redis into one, adding pauses between sentences, and saves the final audio to Redis.
-#
-#     :param redis_keys: List of Redis keys pointing to cached audio chunks.
-#     :param book_title: Title of the book, used to generate the Redis key.
-#     :param section_index: Section index used to generate the Redis key.
-#     :param heading: Heading used to generate the Redis key.
-#     :param pauses: Dictionary specifying pause durations in milliseconds, e.g., {"sentence": 500, "heading": 1000}.
-#     """
-#     # update the task status
-#     task["status"] = "Combining audio chunks"
-#     update_status_in_redis(task.get("job_id"), task["status"])
-#
-#     output_format = task.get("output_format")
-#     book_title = task.get("book_title")
-#
-#     pauses = {"sentence": 500, "heading": 1000}  # Default pauses in milliseconds
-#
-#     combined = AudioSegment.empty()
-#     pause_between_sentences = AudioSegment.silent(duration=pauses["sentence"])
-#     pause_between_heading_and_text = AudioSegment.silent(duration=pauses["heading"])
-#
-#     for idx, chunk in enumerate(audio_chunks):
-#
-#         # Load audio from binary
-#         audio = AudioSegment.from_file(io.BytesIO(chunk), format=output_format)
-#
-#         # Add pause and concatenate
-#         if idx == 0:
-#             combined += audio + pause_between_heading_and_text
-#         else:
-#             combined += pause_between_sentences + audio
-#
-#     # Remove trailing silence
-#     combined = combined[:-len(pause_between_sentences)]
-#
-#     # Save concatenated audio to Redis
-#     redis_key = f"{book_title}:{section_index}:{heading}"
-#     output_buffer = io.BytesIO()
-#     combined.export(output_buffer, format="wav")  # Export to buffer
-#     redis_result_db.set(redis_key, output_buffer.getvalue())  # Save to Redis
-#     # update the task status
-#     task["status"] = "completed"
-#     update_status_in_redis(task.get("job_id"), task["status"])
-#
-#     logger.info(f"Saved concatenated audio to Redis with key: {redis_key}")
 
 
 
